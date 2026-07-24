@@ -1,26 +1,35 @@
 @import "tailwindcss";
 
+/* Dark theme only (per PLAN §11.1) — no toggle. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0a;
+  --card: #111111;
+  --border: #1f1f1f;
+  --foreground: #ededed;
+  --muted: #666666;
+  --accent: #3ecf8e;
+  --warning: #f59e0b;
+  --error: #ef4444;
+  --running: #3b82f6;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-card: var(--card);
+  --color-border: var(--border);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-running: var(--running);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
 }
