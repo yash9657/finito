@@ -1,0 +1,21 @@
+invoice_number,vendor_name,line_item,amount,invoice_date,due_date
+INV-2026-9201,Meridian Supply Corp,Raw materials Q2 restock order,100777.75,2026-06-06,2026-08-05
+INV-2026-9203,Blue Ridge Logistics LLC,Cloud hosting managed services,85525.75,2026-06-06,2026-08-05
+INV-2026-9214,Granite Peak Hardware,Bulk hardware tools order,44267.50,2026-06-09,2026-08-08
+INV-2026-9217,Copperfield Legal LLP,Raw materials Q2 restock order,43200.00,2026-06-09,2026-08-08
+INV-2026-9219,Halcyon Media LLC,Monthly security services,25276.50,2026-06-11,2026-08-10
+INV-2026-9207,Vertex Materials LLC,Maintenance facility contract,96853.99,2026-06-12,2026-08-11
+INV-2026-9209,Evergreen Facilities Corp,Retainer legal advisory,7051.50,2026-06-13,2026-08-12
+INV-2026-9211,Ironclad Security Inc,Binding and printing job,29824.00,2026-06-13,2026-08-12
+INV-2026-9213,Redwood Analytics LLC,License analytics platform,95844.99,2026-06-14,2026-08-13
+INV-2026-9208,Pioneer Freight Co,Monthly security services,110817.75,2026-06-15,2026-08-14
+INV-2026-9218,Quantum Robotics Inc,Maintenance facility contract,26847.99,2026-06-15,2026-08-14
+INV-2026-9202,Acme Industrial Inc,Workstations office furniture,114287.25,2026-06-16,2026-08-15
+INV-2026-9204,Cardinal Office Supplies,Engagement consulting services,11732.50,2026-06-16,2026-08-15
+INV-2026-9215,Silverline Telecom Co,Property insurance premium,50950.00,2026-06-18,2026-08-17
+INV-2026-9216,Meridian Supply Corp,Raw materials Q2 restock order,100777.75,2026-06-18,2026-08-17
+INV-2026-9220,Titan Steelworks Co,Bulk hardware tools order,82168.25,2026-06-18,2026-08-17
+INV-2026-9206,Summit Consulting Group,Campaign production marketing,23184.00,2026-06-20,2026-08-19
+INV-2026-9212,Harbor Point Catering,Quarterly offsite catering,63893.00,2026-06-21,2026-08-20
+INV-2026-9205,Northwind Traders Inc,Logistics and freight charges,79639.00,2026-06-23,2026-08-22
+INV-2026-9210,Cascade Print Services,Circuits telecom services,62332.00,2026-06-23,2026-08-22

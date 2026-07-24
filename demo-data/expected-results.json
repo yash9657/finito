@@ -1,0 +1,70 @@
+{
+  "generatedBy": "scripts/generate-demo-data.ts",
+  "seed": 1592639710,
+  "reconciliation": {
+    "files": {
+      "erp_export_demo": 50,
+      "bank_statement_demo": 50
+    },
+    "exactMatches": 44,
+    "flags": {
+      "timing_difference": 2,
+      "amount_mismatch": 1,
+      "missing_from_bank": 3,
+      "missing_from_erp": 2,
+      "duplicate": 1
+    },
+    "feeMismatch": {
+      "description": "Wire transfer — Meridian Supply Co",
+      "erpCents": 1250000,
+      "bankCents": 1248500,
+      "differenceCents": 1500
+    },
+    "netDifferenceCents": -574450,
+    "status": "EXCEPTIONS_FOUND"
+  },
+  "ap": {
+    "files": {
+      "purchase_orders_demo": 18,
+      "invoices_demo": 20
+    },
+    "autoApprove": 15,
+    "holdForReview": 5,
+    "holdBreakdown": {
+      "no_matching_po": 3,
+      "amount_variance": 1,
+      "duplicate_invoice": 1
+    },
+    "edgeCaseVariancePct": 1.9,
+    "variancePctOf8": 8
+  },
+  "fpa": {
+    "files": {
+      "budget_demo": 48,
+      "actuals_demo": 48
+    },
+    "period": "2026-06",
+    "materialVariances": [
+      {
+        "department": "R&D",
+        "category": "Payroll",
+        "varianceCents": 15000000,
+        "rank": 1
+      },
+      {
+        "department": "Marketing",
+        "category": "Advertising",
+        "varianceCents": -8000000,
+        "rank": 2
+      },
+      {
+        "department": "Operations",
+        "category": "Cloud Infrastructure",
+        "varianceCents": 4500000,
+        "rank": 3
+      }
+    ],
+    "netVarianceCents": 14842647,
+    "overallStatus": "unfavorable"
+  }
+}

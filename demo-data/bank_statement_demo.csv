@@ -1,0 +1,51 @@
+date,description,amount,transaction_id
+2026-06-01,AWS Inc subscription,52445.99,TXN80040
+2026-06-02,ACH Payroll June 2026 Cycle 1,79091.50,TXN80037
+2026-06-02,Datadog subscription renewal,48997.25,TXN80013
+2026-06-03,Snowflake subscription renewal,41170.75,TXN80006
+2026-06-04,Vendor payment Acme Industrial LLC,63033.75,TXN80034
+2026-06-05,ACH Payroll June 2026 Cycle 2,83362.99,TXN80003
+2026-06-05,ACH Vendor payment Harbor Point Catering,65526.00,TXN80022
+2026-06-05,Notion Inc subscription,72484.00,TXN80012
+2026-06-06,Figma Inc subscription,34659.75,TXN80041
+2026-06-06,Slack subscription renewal,64549.99,TXN80042
+2026-06-09,ACH Payroll June 2026 Cycle 1,67229.25,TXN80032
+2026-06-09,ACH Payroll June 2026 Cycle 2,52967.50,TXN80001
+2026-06-09,Vendor payment Copperfield Legal LLP,54132.75,TXN80035
+2026-06-09,Wire transfer — Meridian Supply Co,12485.00,TXN80047
+2026-06-11,ACH Payroll June 2026 Cycle 1,77378.25,TXN80011
+2026-06-11,ACH Payroll June 2026 Cycle 2,55700.25,TXN80002
+2026-06-11,ACH Payroll June 2026 Cycle 2,44128.00,TXN80036
+2026-06-12,ACH Vendor payment Cardinal Office Supplies,44075.50,TXN80019
+2026-06-12,ACH Vendor payment Evergreen Facilities Co,64656.25,TXN80039
+2026-06-12,ACH Vendor payment Lakeside Maintenance LLC,27638.50,TXN80014
+2026-06-12,Atlassian subscription renewal,51520.25,TXN80008
+2026-06-12,Atlassian subscription renewal,51520.25,TXN80008
+2026-06-13,ACH Payroll June 2026 Cycle 2,58354.99,TXN80030
+2026-06-13,ACH Vendor payment Tidewater Shipping Co,28790.75,TXN80020
+2026-06-14,ACH Payroll June 2026 Cycle 2,47489.25,TXN80015
+2026-06-14,ACH Payroll June 2026 Cycle 2,39204.99,TXN80043
+2026-06-16,ACH Payroll June 2026 Cycle 1,29013.25,TXN80021
+2026-06-16,ACH Vendor payment Stonebridge Insurance Co,65345.75,TXN80044
+2026-06-18,ACH Vendor payment Ironclad Security LLC,42959.99,TXN80005
+2026-06-18,Adobe Creative Cloud Inc subscription,46465.25,TXN80023
+2026-06-18,Atlassian Inc subscription,36544.00,TXN80010
+2026-06-19,ACH Payroll June 2026 Cycle 1,25117.00,TXN80026
+2026-06-21,Zoom Inc subscription,70582.75,TXN80033
+2026-06-22,ACH Vendor payment Ironclad Security LLC,53712.25,TXN80024
+2026-06-22,AWS subscription renewal,56236.00,TXN80027
+2026-06-23,POS Acme Industrial LLC adjustment,14241.00,TXN80049
+2026-06-23,Vendor payment Northwind Traders LLC,68628.25,TXN80004
+2026-06-24,Slack Inc subscription,13683.00,TXN80009
+2026-06-24,Vendor payment - Acme Industrial LLC,30632.99,TXN80045
+2026-06-24,Vendor payment - Summit Consulting Group,16909.25,TXN80046
+2026-06-24,Vendor payment Acme Industrial LLC,6731.50,TXN80025
+2026-06-24,Vendor payment Summit Consulting Group,57699.25,TXN80007
+2026-06-25,ACH Payroll June 2026 Cycle 2,16749.50,TXN80029
+2026-06-25,ACH Vendor payment Lakeside Maintenance LLC,35172.50,TXN80017
+2026-06-25,Adobe Creative Cloud subscription renewal,22015.75,TXN80018
+2026-06-25,Atlassian subscription renewal,3475.00,TXN80031
+2026-06-27,POS Northwind Traders LLC adjustment,27634.25,TXN80048
+2026-06-27,Vendor payment Vertex Materials Inc,37676.50,TXN80028
+2026-06-28,AWS Inc subscription,68323.50,TXN80016
+2026-06-28,Vendor payment Harbor Point Catering,83823.00,TXN80038

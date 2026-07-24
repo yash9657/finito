@@ -1,0 +1,49 @@
+department,category,budgeted_amount,period
+R&D,Payroll,600000.00,2026-06
+R&D,Advertising,267307.00,2026-06
+R&D,Cloud Infrastructure,81344.00,2026-06
+R&D,Travel,403377.00,2026-06
+R&D,Software Licenses,267255.00,2026-06
+R&D,Professional Services,485955.00,2026-06
+Marketing,Payroll,489647.00,2026-06
+Marketing,Advertising,500000.00,2026-06
+Marketing,Cloud Infrastructure,200543.00,2026-06
+Marketing,Travel,498267.00,2026-06
+Marketing,Software Licenses,370159.00,2026-06
+Marketing,Professional Services,474159.00,2026-06
+Operations,Payroll,297444.00,2026-06
+Operations,Advertising,95030.00,2026-06
+Operations,Cloud Infrastructure,250000.00,2026-06
+Operations,Travel,221398.00,2026-06
+Operations,Software Licenses,191032.00,2026-06
+Operations,Professional Services,391797.00,2026-06
+Sales,Payroll,298280.00,2026-06
+Sales,Advertising,311978.00,2026-06
+Sales,Cloud Infrastructure,192601.00,2026-06
+Sales,Travel,95723.00,2026-06
+Sales,Software Licenses,515227.00,2026-06
+Sales,Professional Services,206362.00,2026-06
+Finance,Payroll,494690.00,2026-06
+Finance,Advertising,527173.00,2026-06
+Finance,Cloud Infrastructure,102492.00,2026-06
+Finance,Travel,160629.00,2026-06
+Finance,Software Licenses,238670.00,2026-06
+Finance,Professional Services,114300.00,2026-06
+Human Resources,Payroll,89160.00,2026-06
+Human Resources,Advertising,112180.00,2026-06
+Human Resources,Cloud Infrastructure,90927.00,2026-06
+Human Resources,Travel,101283.00,2026-06
+Human Resources,Software Licenses,283468.00,2026-06
+Human Resources,Professional Services,386970.00,2026-06
+Customer Success,Payroll,92891.00,2026-06
+Customer Success,Advertising,211367.00,2026-06
+Customer Success,Cloud Infrastructure,459040.00,2026-06
+Customer Success,Travel,193125.00,2026-06
+Customer Success,Software Licenses,422468.00,2026-06
+Customer Success,Professional Services,90318.00,2026-06
+IT,Payroll,278197.00,2026-06
+IT,Advertising,506873.00,2026-06
+IT,Cloud Infrastructure,365158.00,2026-06
+IT,Travel,276215.00,2026-06
+IT,Software Licenses,418723.00,2026-06
+IT,Professional Services,537194.00,2026-06

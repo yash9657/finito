@@ -1,0 +1,49 @@
+department,category,actual_amount,period
+R&D,Payroll,750000.00,2026-06
+R&D,Advertising,268730.74,2026-06
+R&D,Cloud Infrastructure,80456.46,2026-06
+R&D,Travel,415204.35,2026-06
+R&D,Software Licenses,262368.12,2026-06
+R&D,Professional Services,471220.48,2026-06
+Marketing,Payroll,479531.05,2026-06
+Marketing,Advertising,420000.00,2026-06
+Marketing,Cloud Infrastructure,192980.53,2026-06
+Marketing,Travel,514807.03,2026-06
+Marketing,Software Licenses,376587.29,2026-06
+Marketing,Professional Services,465292.00,2026-06
+Operations,Payroll,296952.71,2026-06
+Operations,Advertising,94390.50,2026-06
+Operations,Cloud Infrastructure,295000.00,2026-06
+Operations,Travel,229958.04,2026-06
+Operations,Software Licenses,197305.44,2026-06
+Operations,Professional Services,405030.55,2026-06
+Sales,Payroll,305384.84,2026-06
+Sales,Advertising,304712.95,2026-06
+Sales,Cloud Infrastructure,190851.16,2026-06
+Sales,Travel,96527.73,2026-06
+Sales,Software Licenses,498790.04,2026-06
+Sales,Professional Services,200876.81,2026-06
+Finance,Payroll,512483.28,2026-06
+Finance,Advertising,520230.77,2026-06
+Finance,Cloud Infrastructure,98718.64,2026-06
+Finance,Travel,154950.63,2026-06
+Finance,Software Licenses,230490.29,2026-06
+Finance,Professional Services,111379.77,2026-06
+Human Resources,Payroll,87598.02,2026-06
+Human Resources,Advertising,112123.82,2026-06
+Human Resources,Cloud Infrastructure,94455.07,2026-06
+Human Resources,Travel,102516.05,2026-06
+Human Resources,Software Licenses,283657.16,2026-06
+Human Resources,Professional Services,383643.15,2026-06
+Customer Success,Payroll,95250.02,2026-06
+Customer Success,Advertising,219431.46,2026-06
+Customer Success,Cloud Infrastructure,466134.31,2026-06
+Customer Success,Travel,196689.10,2026-06
+Customer Success,Software Licenses,431517.90,2026-06
+Customer Success,Professional Services,88803.24,2026-06
+IT,Payroll,285601.31,2026-06
+IT,Advertising,504106.87,2026-06
+IT,Cloud Infrastructure,358441.19,2026-06
+IT,Travel,287078.37,2026-06
+IT,Software Licenses,428411.97,2026-06
+IT,Professional Services,540151.26,2026-06

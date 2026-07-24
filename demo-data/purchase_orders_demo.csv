@@ -1,0 +1,19 @@
+po_number,vendor_name,line_item,amount,issued_date,approved_by
+PO-2026-5101,Meridian Supply Co,Q2 raw materials restock,100777.75,2026-06-02,R. Alvarez
+PO-2026-5102,Acme Industrial LLC,Office furniture — workstations,114287.25,2026-06-03,R. Alvarez
+PO-2026-5103,Blue Ridge Logistics Inc,Managed cloud hosting,85525.75,2026-06-04,R. Alvarez
+PO-2026-5104,Cardinal Office Supplies,Consulting services engagement,11732.50,2026-06-05,R. Alvarez
+PO-2026-5105,Northwind Traders LLC,Freight and logistics,79639.00,2026-06-06,S. Patel
+PO-2026-5106,Summit Consulting Group,Marketing campaign production,23184.00,2026-06-07,R. Alvarez
+PO-2026-5107,Vertex Materials Inc,Facility maintenance contract,96853.99,2026-06-08,J. Okafor
+PO-2026-5108,Pioneer Freight Corp,Security services monthly,110817.75,2026-06-09,M. Chen
+PO-2026-5109,Evergreen Facilities Co,Legal advisory retainer,7051.50,2026-06-10,J. Okafor
+PO-2026-5110,Cascade Print Services,Telecom circuits,62332.00,2026-06-11,M. Chen
+PO-2026-5111,Ironclad Security LLC,Printing and binding,29824.00,2026-06-12,M. Chen
+PO-2026-5112,Harbor Point Catering,Catering — quarterly offsite,63893.00,2026-06-13,J. Okafor
+PO-2026-5113,Redwood Analytics Inc,Analytics platform license,95844.99,2026-06-14,S. Patel
+PO-2026-5114,Granite Peak Hardware,Hardware tools bulk order,44267.50,2026-06-15,R. Alvarez
+PO-2026-5115,Silverline Telecom Corp,Insurance premium — property,50000.00,2026-06-16,T. Nguyen
+PO-2026-5116,Copperfield Legal LLP,Q2 raw materials restock,40000.00,2026-06-17,M. Chen
+PO-2026-5117,Tidewater Shipping Co,Managed cloud hosting,47942.50,2026-06-18,T. Nguyen
+PO-2026-5118,Lakeside Maintenance LLC,Q2 raw materials restock,30980.50,2026-06-19,J. Okafor
