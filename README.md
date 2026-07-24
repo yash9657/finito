@@ -18,7 +18,7 @@ Built with Next.js 15 (App Router), React 19, Tailwind v4 (dark-only), Supabase
 
 ## 2. Environment variables (§2)
 
-Copy `.env.example` to `.env.local` and fill in the four values:
+Copy `.env.example` to `.env.local` and fill in the values:
 
 ```bash
 cp .env.example .env.local
@@ -28,28 +28,42 @@ cp .env.example .env.local
 NEXT_PUBLIC_SUPABASE_URL=        # your Supabase project URL
 NEXT_PUBLIC_SUPABASE_ANON_KEY=   # Supabase anon/public key (browser auth)
 SUPABASE_SERVICE_ROLE_KEY=       # server-only; never expose to the client
-ANTHROPIC_API_KEY=               # OPTIONAL self-host/dev fallback (see BYOK below)
+LLM_KEY_ENCRYPTION_SECRET=       # required to SAVE provider API keys (AES-256-GCM, D-P2)
+LLM_BLOCK_PRIVATE_URLS=          # OPTIONAL SSRF guard for custom base_urls (D-P13)
+ANTHROPIC_API_KEY=               # OPTIONAL self-host/dev fallback (D-P4)
 ```
 
 `.env.local` is gitignored. The two `NEXT_PUBLIC_*` values are safe in the
-browser; `SUPABASE_SERVICE_ROLE_KEY` and `ANTHROPIC_API_KEY` are used only in
-server code (API route handlers + the runner) and must never be sent to the client.
+browser; every other value is used only in server code (API route handlers + the
+orchestrator) and must never be sent to the client.
 
-`ANTHROPIC_API_KEY` is **optional**: FinFlow uses a Bring-Your-Own-Key model
-(each user supplies their own key from the browser — see
-[§ Bring Your Own Key](#bring-your-own-key-byok) below). Set the server-side
-`ANTHROPIC_API_KEY` only as a convenience fallback for local dev or a private
-self-hosted deployment.
+- **`LLM_KEY_ENCRYPTION_SECRET`** — a random 32+ character string. Provider API
+  keys are encrypted at rest with AES-256-GCM using a SHA-256 derivation of this
+  secret (Plan 2, D-P2). Config-save routes **fail closed (500)** if it is unset.
+  ⚠️ Rotating it invalidates every stored key — users must re-enter them under
+  Settings → Models.
+- **`LLM_BLOCK_PRIVATE_URLS`** — set to `1` to reject private/localhost `base_url`
+  hosts at config-save time, but **only** when `NODE_ENV=production` (D-P13).
+  Default off, so self-hosters can point at `http://localhost:11434` (Ollama) or a
+  VPC endpoint.
+- **`ANTHROPIC_API_KEY`** — optional. When an org has **zero** active model configs,
+  the router treats this key as an implicit Anthropic config
+  (`default_model = claude-sonnet-4-6`), so `next dev` demos work with nothing but
+  this env var (D-P4). On a shared/public deployment, prefer real org configs under
+  Settings → Models instead.
 
 ## 3. Apply the database schema
 
-The full schema lives in
+The schema lives in
 [`supabase/migrations/001_init.sql`](./supabase/migrations/001_init.sql) (tables,
 RLS policies, the `profiles` auto-provision trigger, the seeded "Demo Org", and the
-private `workflow-files` Storage bucket). Apply it either way:
+private `workflow-files` Storage bucket) followed by
+[`supabase/migrations/002_llm_providers.sql`](./supabase/migrations/002_llm_providers.sql)
+(the `org_model_configs` / `workflow_step_configs` tables and the provenance columns
+on `workflow_steps`). Apply them **in order**, either way:
 
 - **Supabase SQL editor** — open your project → SQL Editor → paste the contents of
-  `001_init.sql` → Run.
+  `001_init.sql` → Run, then do the same for `002_llm_providers.sql`.
 - **Supabase CLI** — with the CLI linked to your project:
 
   ```bash
