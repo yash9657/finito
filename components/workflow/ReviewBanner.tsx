@@ -112,7 +112,7 @@ export default function ReviewBanner({
   /* ---- awaiting review: the decision gate ---- */
   if (workflow.status === "awaiting_review") {
     return (
-      <div className="rounded-lg border-2 border-warning bg-warning/5 p-4">
+      <div className="m-3 rounded-lg border border-warning/30 bg-warning/[0.06] p-4">
         <div className="mb-3 flex items-center gap-2 text-warning">
           <AlertCircle className="h-4 w-4" />
           <span className="text-sm font-medium">
@@ -174,20 +174,16 @@ export default function ReviewBanner({
   /* ---- approved: confirmation + report link ---- */
   if (workflow.status === "approved") {
     return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border-2 border-accent bg-accent/5 p-4">
+      <div className="m-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-accent/30 bg-accent/[0.06] p-4">
         <div className="flex items-center gap-2 text-accent">
           <CheckCircle2 className="h-4 w-4" />
-          <span className="text-sm">
+          <span className="text-sm font-medium">
             Approved
             {review ? (
-              <>
+              <span className="font-normal text-accent/70">
                 {" "}
-                by{" "}
-                <span className="font-mono">{review.reviewer_id}</span> at{" "}
-                <span className="font-mono">
-                  {formatDateTime(review.decided_at)}
-                </span>
-              </>
+                · {formatDateTime(review.decided_at)}
+              </span>
             ) : null}
           </span>
         </div>
@@ -201,7 +197,7 @@ export default function ReviewBanner({
   /* ---- error: failure banner + resume ---- */
   if (workflow.status === "error") {
     return (
-      <div className="rounded-lg border-2 border-error bg-error/5 p-4">
+      <div className="m-3 rounded-lg border border-error/30 bg-error/[0.06] p-4">
         <div className="mb-3 flex items-start gap-2 text-error">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="text-sm">
@@ -242,21 +238,17 @@ export default function ReviewBanner({
   /* ---- rejected: terminal banner ---- */
   if (workflow.status === "rejected") {
     return (
-      <div className="rounded-lg border-2 border-error bg-error/5 p-4">
+      <div className="m-3 rounded-lg border border-error/30 bg-error/[0.06] p-4">
         <div className="flex items-start gap-2 text-error">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="text-sm">
             <p className="font-medium">
               Rejected
               {review ? (
-                <>
+                <span className="font-normal text-error/70">
                   {" "}
-                  by{" "}
-                  <span className="font-mono">{review.reviewer_id}</span> at{" "}
-                  <span className="font-mono">
-                    {formatDateTime(review.decided_at)}
-                  </span>
-                </>
+                  · {formatDateTime(review.decided_at)}
+                </span>
               ) : null}
             </p>
             {review?.comment && (

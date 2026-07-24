@@ -54,9 +54,10 @@ function StatusGlyph({ status }: { status: StepStatus }) {
   );
 }
 
-function trackVariant(track: Track): "muted" | "running" | "accent" {
-  if (track === "main") return "muted";
-  return track === "A" ? "running" : "accent";
+// Track is a layout hint, not a status — keep the chip neutral so parallel tracks
+// don't read as two clashing accent colors.
+function trackVariant(_track: Track): "muted" {
+  return "muted";
 }
 
 function Section({
@@ -117,7 +118,7 @@ export default function StepCard({ step }: { step: StepRow }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
+        className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
       >
         <ChevronRight
           className={cn(
@@ -148,7 +149,7 @@ export default function StepCard({ step }: { step: StepRow }) {
       </button>
 
       {open && (
-        <div className="ff-step-anim space-y-3 border-t border-border px-3 py-3 font-mono text-xs leading-relaxed">
+        <div className="ff-step-anim space-y-3 border-t border-border px-3 py-3 text-xs leading-relaxed">
           {hasReasoning && (
             <Section label="Reasoning">
               <p className="whitespace-pre-wrap text-foreground/90">
@@ -159,7 +160,7 @@ export default function StepCard({ step }: { step: StepRow }) {
 
           {hasInput && (
             <Section label="Input">
-              <pre className="max-h-48 overflow-auto rounded border border-border bg-background/60 p-2 text-[11px] text-foreground/80">
+              <pre className="max-h-48 overflow-auto rounded border border-border bg-background/60 p-2 font-mono text-[11px] text-foreground/80">
                 {pretty(step.input_snapshot)}
               </pre>
             </Section>
@@ -167,7 +168,7 @@ export default function StepCard({ step }: { step: StepRow }) {
 
           {hasOutput && (
             <Section label="Output">
-              <pre className="max-h-64 overflow-auto rounded border border-border bg-background/60 p-2 text-[11px] text-foreground/80">
+              <pre className="max-h-64 overflow-auto rounded border border-border bg-background/60 p-2 font-mono text-[11px] text-foreground/80">
                 {pretty(step.output)}
               </pre>
             </Section>
@@ -191,7 +192,7 @@ export default function StepCard({ step }: { step: StepRow }) {
           )}
 
           {hasProvenance && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2 text-[10px] text-muted">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2 font-mono text-[10px] text-muted">
               <span className="text-foreground/70">
                 {step.provider_used}:{step.model}
               </span>
