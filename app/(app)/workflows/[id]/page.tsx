@@ -101,11 +101,13 @@ export default function WorkflowPage({
         </Badge>
       </header>
 
+      {/* Each panel owns its own internal scroll (overflow-hidden here bounds the row
+          so an expanded StepCard scrolls inside the panel, not the whole page). */}
       <div className="grid min-h-0 flex-1 grid-cols-[420px_1fr]">
-        <div className="min-h-0 overflow-y-auto border-r border-border">
+        <div className="min-h-0 overflow-hidden border-r border-border">
           <LiveWorkflowView steps={steps} />
         </div>
-        <div className="min-h-0 overflow-y-auto">
+        <div className="min-h-0 overflow-hidden">
           <OutputPanel workflow={workflow} steps={steps} />
         </div>
       </div>

@@ -1,7 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, FileText } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  CheckCircle2,
+  AlertTriangle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatCents, formatPercent } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -130,7 +136,7 @@ function CollapsibleSection({
   children,
 }: {
   title: string;
-  count: number;
+  count?: number;
   defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
@@ -150,7 +156,7 @@ function CollapsibleSection({
           )}
           <span className="text-sm font-semibold">{title}</span>
         </span>
-        <Badge variant="muted">{count}</Badge>
+        {count !== undefined && <Badge variant="muted">{count}</Badge>}
       </button>
       {open && <CardContent className="p-0">{children}</CardContent>}
     </Card>
@@ -200,6 +206,127 @@ function Stat({
 }
 
 /* -------------------------------------------------------------------------- */
+/* Reconciliation — insight findings                                           */
+/* -------------------------------------------------------------------------- */
+
+interface ReconFinding {
+  key: string;
+  category: ExceptionCategory;
+  tone: "error" | "warning";
+  headline: string;
+  amountCents: number;
+  explanation: string;
+  recommendation: string;
+}
+
+/**
+ * Turn the computed exceptions (each already carrying a category, explanation and
+ * recommendation from the flag step) into a prioritized, scannable list — ordered by
+ * absolute amount so the most material item leads. Deterministic: built from the
+ * summary, not re-derived from the narrative paragraph.
+ */
+function buildReconFindings(summary: ReconReportSummary): ReconFinding[] {
+  const findings: ReconFinding[] = [];
+  const toneOf = (c: ExceptionCategory): "error" | "warning" =>
+    RECON_FLAG_VARIANTS[c] === "error" ? "error" : "warning";
+
+  for (const t of summary.unmatchedErp) {
+    findings.push({
+      key: `erp-${t.id}`,
+      category: t.flag.category,
+      tone: toneOf(t.flag.category),
+      headline: `${t.id} · ${t.description}`,
+      amountCents: t.amountCents,
+      explanation: t.flag.explanation,
+      recommendation: t.flag.recommendation,
+    });
+  }
+  for (const t of summary.unmatchedBank) {
+    findings.push({
+      key: `bank-${t.id}`,
+      category: t.flag.category,
+      tone: toneOf(t.flag.category),
+      headline: `${t.id} · ${t.description}`,
+      amountCents: t.amountCents,
+      explanation: t.flag.explanation,
+      recommendation: t.flag.recommendation,
+    });
+  }
+  for (const d of summary.duplicates) {
+    findings.push({
+      key: `dup-${d.id}`,
+      category: "duplicate",
+      tone: "warning",
+      headline: `${d.id} · ${d.description}`,
+      amountCents: d.amountCents,
+      explanation: `Duplicate of ${d.duplicateOf} — same amount, date and description.`,
+      recommendation: "Remove the duplicate entry before period close.",
+    });
+  }
+
+  return findings.sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
+}
+
+function ReconStatusCallout({ summary }: { summary: ReconReportSummary }) {
+  const clean = summary.status === "CLEAN";
+  const exceptions =
+    summary.unmatchedErp.length + summary.unmatchedBank.length + summary.duplicates.length;
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-2 rounded-lg border px-4 py-3 text-sm",
+        clean
+          ? "border-accent/40 bg-accent/10 text-accent"
+          : "border-warning/40 bg-warning/10 text-warning",
+      )}
+    >
+      {clean ? (
+        <>
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>Reconciliation is clean — every transaction matched.</span>
+        </>
+      ) : (
+        <>
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>
+            {exceptions} exception{exceptions === 1 ? "" : "s"} need review · net difference{" "}
+            <span className={num("font-semibold")}>
+              {formatCents(summary.netDifferenceCents)}
+            </span>
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+function FindingCard({ f }: { f: ReconFinding }) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-border bg-card p-3",
+        f.tone === "error" ? "border-l-2 border-l-error" : "border-l-2 border-l-warning",
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <ReconFlagChip category={f.category} />
+          <span className="truncate text-sm font-medium">{f.headline}</span>
+        </div>
+        <span className={num("shrink-0 text-sm font-semibold")}>
+          {formatCents(f.amountCents)}
+        </span>
+      </div>
+      <p className="mt-1.5 text-xs leading-relaxed text-foreground/80">{f.explanation}</p>
+      <p className="mt-1 text-xs leading-relaxed">
+        <span className="font-medium text-accent">Recommended: </span>
+        <span className="text-foreground/80">{f.recommendation}</span>
+      </p>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Reconciliation                                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -216,6 +343,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
 
   const matchedPairs = summary?.matchedPairs ?? match?.matchedPairs ?? [];
   const duplicates = summary?.duplicates ?? match?.duplicates ?? [];
+  const findings = summary ? buildReconFindings(summary) : [];
 
   return (
     <div className="flex flex-col gap-4">
@@ -241,12 +369,28 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
               tone={summary.netDifferenceCents === 0 ? "accent" : "error"}
             />
           </div>
+
+          <ReconStatusCallout summary={summary} />
+
+          {findings.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold">Priority exceptions</h3>
+                <Badge variant="muted">{findings.length}</Badge>
+                <span className="text-xs text-muted">most material first</span>
+              </div>
+              {findings.map((f) => (
+                <FindingCard key={f.key} f={f} />
+              ))}
+            </div>
+          )}
+
           {summary.narrative && (
-            <Card>
-              <CardContent className="p-3 text-sm leading-relaxed text-foreground/90">
+            <CollapsibleSection title="Analyst narrative">
+              <p className="p-3 text-sm leading-relaxed text-foreground/90">
                 {summary.narrative}
-              </CardContent>
-            </Card>
+              </p>
+            </CollapsibleSection>
           )}
         </>
       )}

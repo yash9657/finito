@@ -25,7 +25,7 @@ export default async function AppLayout({
   }
 
   return (
-    <div className="flex min-h-screen bg-background text-foreground">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
       <aside className="flex w-56 flex-col border-r border-border bg-card">
         <div className="flex h-14 items-center px-5">
           <Link
