@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { requireWorkflowAccess, jsonError } from "@/lib/api/guard";
 import { writeAudit } from "@/lib/audit";
-import { runWorkflow } from "@/lib/agents/runner";
+import { runWorkflow } from "@/lib/agents/orchestrator";
+import { resolveProvider, NoProviderConfiguredError } from "@/lib/llm/router";
+import { workflowDefinitions } from "@/lib/agents/dag";
 import type { FileType, WorkflowType } from "@/lib/types";
 
 // Long-running background execution kicked off via waitUntil (D2).
@@ -19,11 +21,12 @@ const REQUIRED_FILES: Record<WorkflowType, FileType[]> = {
 };
 
 /**
- * POST /api/workflows/[id]/run — validate readiness, mark the workflow `running`,
- * then fire the idempotent+resumable runner in the background (D2) and return 202.
+ * POST /api/workflows/[id]/run — validate readiness, verify a provider resolves for
+ * every LLM step (D-P4/D-P7), mark the workflow `running`, then fire the DAG
+ * orchestrator in the background (D2/D-P6) and return 202.
  */
 export async function POST(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
@@ -31,14 +34,6 @@ export async function POST(
   const g = await requireWorkflowAccess(id);
   if (!g.ok) return g.response;
   const { admin, profile, workflow } = g;
-
-  // BYOK: the key rides in the request header only (never a JSON body, so it can't land
-  // in a body log or input_snapshot). Fall back to the server env for self-host/dev.
-  // The key is used transiently and is NEVER logged, persisted, or put in an audit detail.
-  const apiKey = req.headers.get("x-anthropic-api-key") ?? process.env.ANTHROPIC_API_KEY ?? "";
-  if (!apiKey) {
-    return jsonError("No Anthropic API key provided", 400);
-  }
 
   // Re-running after a crash/failure = resume (D2). Only idle or error may launch.
   if (workflow.status !== "idle" && workflow.status !== "error") {
@@ -63,6 +58,25 @@ export async function POST(
   const missing = required.filter((ft) => !present.has(ft));
   if (missing.length > 0) {
     return jsonError(`Missing required files: ${missing.join(", ")}`, 400);
+  }
+
+  // Fail fast (D-P4): the org must resolve a provider for every LLM step before we flip
+  // to running, so a misconfigured org gets a clear 400 up front instead of a paused run.
+  const def = workflowDefinitions[workflow.type];
+  try {
+    for (const step of def.steps) {
+      if (step.kind !== "llm") continue;
+      await resolveProvider(admin, {
+        orgId: profile.org_id,
+        workflowType: workflow.type,
+        stepKey: step.key,
+      });
+    }
+  } catch (err) {
+    if (err instanceof NoProviderConfiguredError) {
+      return jsonError(err.message, 400);
+    }
+    return jsonError(err instanceof Error ? err.message : "Provider resolution failed", 500);
   }
 
   // Mark running + record launch time. Clear any prior error_message from a failed run.
@@ -91,9 +105,9 @@ export async function POST(
   // Fallback (§15): if waitUntil is unavailable at runtime, fire-and-catch.
   try {
     const { waitUntil } = await import("@vercel/functions");
-    waitUntil(runWorkflow(id, apiKey));
+    waitUntil(runWorkflow(id));
   } catch {
-    void runWorkflow(id, apiKey).catch((err: unknown) => {
+    void runWorkflow(id).catch((err: unknown) => {
       console.error(`[run] background runWorkflow(${id}) failed:`, err);
     });
   }

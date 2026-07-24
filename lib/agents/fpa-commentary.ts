@@ -15,17 +15,18 @@
 import type {
   ActualsLine,
   BudgetLine,
+  DagStepDefinition,
   FpaDepartmentSummary,
   FpaLine,
   FpaOutput,
   FpaVarianceComment,
+  LlmFn,
+  LlmInvokeResult,
   StepContext,
-  StepDefinition,
   StepResult,
   VarianceDirection,
 } from "@/lib/types";
 import { fpaBoardDeckSchema, fpaCommentarySchema } from "@/lib/types";
-import { callClaude } from "@/lib/agents/client";
 import type { z } from "zod";
 
 /* -------------------------------------------------------------------------- */
@@ -102,32 +103,35 @@ function dcKey(dept: string, category: string): string {
  * second failure throws (D3 — one retry with the error appended, then step error).
  */
 async function callWithValidation<T>(opts: {
+  llm: LlmFn;
   system: string;
   user: string;
   schema: z.ZodType<T>;
-  apiKey: string;
   validate: (data: T) => string | null;
-}): Promise<{ data: T; reasoning: string }> {
+}): Promise<LlmInvokeResult<T>> {
   let lastError = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const user =
       attempt === 0
         ? opts.user
         : `${opts.user}\n\nYour previous response had a problem: ${lastError}. Fix it and return corrected JSON.`;
-    const res = await callClaude<T>({ system: opts.system, user, schema: opts.schema, apiKey: opts.apiKey });
+    const res = await opts.llm({ system: opts.system, user, schema: opts.schema });
     const err = opts.validate(res.data);
     if (err === null) return res;
     lastError = err;
   }
-  throw new Error(`Claude output failed post-validation after retry: ${lastError}`);
+  throw new Error(`Model output failed post-validation after retry: ${lastError}`);
 }
 
 /* -------------------------------------------------------------------------- */
 /* Step 1 (main) — Parse & join (deterministic full outer join).               */
 /* -------------------------------------------------------------------------- */
 
-const parseAndJoin: StepDefinition = {
+const parseAndJoin: DagStepDefinition = {
+  key: "parse_join",
   stepNumber: 1,
+  dependsOn: [],
+  role: "parser",
   track: "main",
   name: "Parse & join budget and actuals",
   kind: "deterministic",
@@ -208,13 +212,16 @@ const parseAndJoin: StepDefinition = {
 /* Step 2 (main) — Compute variances (deterministic).                          */
 /* -------------------------------------------------------------------------- */
 
-const computeVariances: StepDefinition = {
+const computeVariances: DagStepDefinition = {
+  key: "compute_variances",
   stepNumber: 2,
+  dependsOn: ["parse_join"],
+  role: "parser",
   track: "main",
   name: "Compute variances",
   kind: "deterministic",
   async run(ctx: StepContext): Promise<StepResult> {
-    const join = ctx.priorOutputs[1] as JoinStepOutput;
+    const join = ctx.priorOutputs["parse_join"] as JoinStepOutput;
 
     const variances: FpaLine[] = join.lines.map((l) => {
       const varianceCents = l.actualAmountCents - l.budgetedAmountCents;
@@ -259,13 +266,16 @@ const computeVariances: StepDefinition = {
 /* Step 3 (main) — Rank material variances (deterministic top-10).             */
 /* -------------------------------------------------------------------------- */
 
-const rankVariances: StepDefinition = {
+const rankVariances: DagStepDefinition = {
+  key: "rank_variances",
   stepNumber: 3,
+  dependsOn: ["compute_variances"],
+  role: "parser",
   track: "main",
   name: "Rank material variances",
   kind: "deterministic",
   async run(ctx: StepContext): Promise<StepResult> {
-    const prior = ctx.priorOutputs[2] as VarianceStepOutput;
+    const prior = ctx.priorOutputs["compute_variances"] as VarianceStepOutput;
 
     const ranked = [...prior.variances].sort(
       (a, b) =>
@@ -302,16 +312,20 @@ const rankVariances: StepDefinition = {
 
 const FPA_COMMENTARY_SYSTEM = `You are a CFO-level financial analyst writing month-end budget-vs-actual commentary for a board report. You do not have access to underlying business context, so: state each variance factually with the amount and direction, offer the most plausible category-level explanation (e.g. headcount timing, vendor invoice timing, milestone payments), and explicitly flag that the specific driver needs management confirmation. Professional, concise, no filler. Write one commentary entry for every material variance you are given, using its exact department and category. Do not add commentary for lines that are not in the provided list.`;
 
-const commentary: StepDefinition = {
+const commentary: DagStepDefinition = {
+  key: "commentary",
   stepNumber: 4,
+  dependsOn: ["rank_variances"],
+  role: "writer",
   track: "main",
   name: "Write variance commentary",
   kind: "llm",
   async run(ctx: StepContext): Promise<StepResult> {
-    const ranked = ctx.priorOutputs[3] as RankStepOutput;
+    const ranked = ctx.priorOutputs["rank_variances"] as RankStepOutput;
     const material = ranked.materialVariances;
 
-    const { data, reasoning } = await callWithValidation({
+    const { data, reasoning, meta } = await callWithValidation({
+      llm: ctx.llm,
       system: FPA_COMMENTARY_SYSTEM,
       user: JSON.stringify({
         materialVariances: material.map((m) => ({
@@ -326,7 +340,6 @@ const commentary: StepDefinition = {
         })),
       }),
       schema: fpaCommentarySchema,
-      apiKey: ctx.apiKey,
       validate: (d) => {
         const got = new Set(d.varianceComments.map((c) => dcKey(c.department, c.category)));
         const missing = material.filter((m) => !got.has(dcKey(m.department, m.category)));
@@ -362,6 +375,7 @@ const commentary: StepDefinition = {
       output,
       reasoning,
       sources: [{ file: "material variances", note: `${material.length} commentary entries` }],
+      llmMeta: meta,
     };
   },
 };
@@ -372,14 +386,17 @@ const commentary: StepDefinition = {
 
 const FPA_DECK_SYSTEM = `You are a CFO-level financial analyst assembling the FP&A section of a board deck. Given the overall budget-vs-actual status and per-department variance summaries, write: (1) a 3-4 sentence executive summary of the month's budget performance, and (2) one concise one-line summary per department capturing its budget-vs-actual position. Professional and board-appropriate, no filler. Provide a summary for every department in the provided list, using its exact name, and do not invent departments.`;
 
-const boardDeck: StepDefinition = {
+const boardDeck: DagStepDefinition = {
+  key: "board_deck",
   stepNumber: 5,
+  dependsOn: ["rank_variances", "commentary"],
+  role: "writer",
   track: "main",
   name: "Board deck content",
   kind: "llm",
   async run(ctx: StepContext): Promise<StepResult> {
-    const ranked = ctx.priorOutputs[3] as RankStepOutput;
-    const commentaryOut = ctx.priorOutputs[4] as CommentaryStepOutput;
+    const ranked = ctx.priorOutputs["rank_variances"] as RankStepOutput;
+    const commentaryOut = ctx.priorOutputs["commentary"] as CommentaryStepOutput;
 
     // Department-level roll-up (code-computed) for the deck prompt.
     const deptAgg = new Map<
@@ -402,7 +419,8 @@ const boardDeck: StepDefinition = {
     const departments = [...deptAgg.values()];
     const wantDepts = new Set(departments.map((d) => norm(d.department)));
 
-    const { data, reasoning } = await callWithValidation({
+    const { data, reasoning, meta } = await callWithValidation({
+      llm: ctx.llm,
       system: FPA_DECK_SYSTEM,
       user: JSON.stringify({
         overallStatus: commentaryOut.overallStatus,
@@ -415,7 +433,6 @@ const boardDeck: StepDefinition = {
         })),
       }),
       schema: fpaBoardDeckSchema,
-      apiKey: ctx.apiKey,
       validate: (d) => {
         const got = new Set(d.departmentSummaries.map((s) => norm(s.department)));
         const missing = departments.filter((dp) => !got.has(norm(dp.department)));
@@ -460,6 +477,7 @@ const boardDeck: StepDefinition = {
       output,
       reasoning,
       sources: [{ file: "board deck", note: `${departmentSummaries.length} department summaries` }],
+      llmMeta: meta,
     };
   },
 };
@@ -468,7 +486,7 @@ const boardDeck: StepDefinition = {
 /* Exported step list. Step 6 (human review) is a status gate — no row (§9).   */
 /* -------------------------------------------------------------------------- */
 
-export const fpaCommentarySteps: StepDefinition[] = [
+export const fpaCommentarySteps: DagStepDefinition[] = [
   parseAndJoin,
   computeVariances,
   rankVariances,

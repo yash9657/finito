@@ -206,30 +206,73 @@ export interface StepSource {
   note: string;
 }
 
+/**
+ * Provider-agnostic usage metadata for one `ctx.llm` call (Plan 2 §2.3, D-P11/D-P14).
+ * `raw` is already redacted+capped by the router. Declared here (not in router.ts) so
+ * types.ts stays the leaf module and the step contract has no import cycle.
+ */
+export interface LlmInvokeMeta {
+  providerId: ProviderIdValue;
+  modelUsed: string;
+  tokensIn: number;
+  tokensOut: number;
+  latencyMs: number;
+  raw: unknown;
+}
+
+export interface LlmInvokeResult<T> {
+  data: T;
+  reasoning: string; // reasoningNative || data.reasoning fallback
+  meta: LlmInvokeMeta;
+}
+
+/**
+ * The LLM closure the orchestrator builds per step (Plan 2 §4.1, D-P1). Step code calls
+ * `ctx.llm(...)` and never sees provider keys or the router — the orchestrator has
+ * already resolved the provider for this step's key (D-P7).
+ */
+export type LlmFn = <T>(opts: {
+  system: string;
+  user: string;
+  schema: z.ZodType<T>;
+}) => Promise<LlmInvokeResult<T>>;
+
 export interface StepContext {
   workflowId: string;
   db: SupabaseClient; // admin client
   files: Record<string, ParsedFile>; // keyed by file_type
-  priorOutputs: Record<number, unknown>; // step_number -> validated output
-  /**
-   * BYOK: the caller-supplied Anthropic API key for this run (§ BYOK). Held only for the
-   * duration of the run; NEVER logged, persisted, or written to any audit/snapshot field.
-   */
-  apiKey: string;
+  priorOutputs: Record<string, unknown>; // step_key -> validated output (D-P5)
+  /** Resolve + call the org's provider for this step (D-P1). LLM steps only. */
+  llm: LlmFn;
 }
 
 export interface StepResult {
   output: unknown; // stored in workflow_steps.output
-  reasoning: string; // Claude's reasoning, or a generated summary
+  reasoning: string; // the model's reasoning, or a generated summary
   sources: StepSource[];
+  /**
+   * The `meta` from the step's (final) `ctx.llm()` call, so the orchestrator can persist
+   * provider/model/tokens/latency/raw (Plan 2 §4.1). Steps making zero LLM calls (or the
+   * skip-adjudication path) leave this undefined.
+   */
+  llmMeta?: LlmInvokeMeta;
 }
 
-export interface StepDefinition {
-  stepNumber: number;
-  track: Track;
-  name: string;
+/** One node of a workflow graph (Plan 2 §4.1, D-P5/D-P8). */
+export interface DagStepDefinition {
+  key: string; // 'parse_erp' — unique within the workflow
+  stepNumber: number; // stable UI order + DB unique constraint (D-P5)
+  dependsOn: string[]; // keys; [] = source node
+  role: StepRole; // D-P8
+  track: Track; // UI layout hint only
+  name: string; // display name (unchanged strings from PLAN.md)
   kind: StepKind;
   run(ctx: StepContext): Promise<StepResult>;
+}
+
+export interface WorkflowDefinition {
+  type: WorkflowType;
+  steps: DagStepDefinition[]; // validated at module load: no unknown/cyclic deps
 }
 
 /* -------------------------------------------------------------------------- */
@@ -267,6 +310,7 @@ export interface WorkflowStep {
   id: string;
   workflow_id: string;
   step_number: number;
+  step_key: string | null; // Plan 2, D-P5 (null on legacy rows until backfilled)
   track: Track;
   name: string;
   status: StepStatus;
@@ -274,7 +318,12 @@ export interface WorkflowStep {
   output: unknown | null;
   agent_reasoning: string | null;
   sources: StepSource[] | null;
-  model: string | null;
+  model: string | null; // exact model string returned by the provider (D-P14)
+  provider_used: string | null; // provider id (D-P14)
+  tokens_in: number | null;
+  tokens_out: number | null;
+  latency_ms: number | null;
+  llm_raw: unknown | null; // redacted+capped provider response (D-P11); never sent to client
   input_hash: string | null;
   error_message: string | null;
   started_at: string | null;

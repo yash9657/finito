@@ -17,9 +17,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import Link from "next/link";
 import FileDropzone from "@/components/workflow/FileDropzone";
-import MissingKeyNotice from "@/components/workflow/MissingKeyNotice";
-import { hasStoredKey, runHeaders } from "@/lib/anthropic-key";
 import { WORKFLOW_TYPES, type FileType, type WorkflowType } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
@@ -105,7 +104,8 @@ export default function NewWorkflowPage() {
 
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [missingKey, setMissingKey] = React.useState(false);
+  // Set when /run returns "No LLM provider configured" so we can link to Settings → Models.
+  const [needsProvider, setNeedsProvider] = React.useState(false);
 
   const config = TYPE_CONFIG[selectedType];
   const requiredTypes = config.files.map((f) => f.fileType);
@@ -139,22 +139,21 @@ export default function NewWorkflowPage() {
   /* --- Stage 3: launch the run, then jump to the live view (§11.4). --- */
   async function launch() {
     if (!workflowId) return;
-    // BYOK guard: without a key stored in this browser, don't call /run.
-    if (!hasStoredKey()) {
-      setMissingKey(true);
-      return;
-    }
-    setMissingKey(false);
+    setNeedsProvider(false);
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch(`/api/workflows/${workflowId}/run`, {
-        method: "POST",
-        headers: runHeaders(),
-      });
+      const res = await fetch(`/api/workflows/${workflowId}/run`, { method: "POST" });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? "Failed to launch workflow");
+        const message = body?.error ?? "Failed to launch workflow";
+        // The run route returns 400 with this message when no provider resolves (D-P4).
+        if (res.status === 400 && /provider configured/i.test(message)) {
+          setNeedsProvider(true);
+          setBusy(false);
+          return;
+        }
+        throw new Error(message);
       }
       router.push(`/workflows/${workflowId}`);
     } catch (e) {
@@ -325,7 +324,17 @@ export default function NewWorkflowPage() {
             })}
           </Card>
 
-          {missingKey && <MissingKeyNotice />}
+          {needsProvider && (
+            <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/50 bg-warning/10 px-4 py-3 text-sm text-warning">
+              <span>No LLM provider configured for your organization.</span>
+              <Link
+                href="/settings/models"
+                className="font-medium underline underline-offset-4 hover:opacity-80"
+              >
+                Configure one in Settings → Models →
+              </Link>
+            </div>
+          )}
 
           <div className="flex justify-between">
             <Button variant="ghost" onClick={() => setStage(2)} disabled={busy}>

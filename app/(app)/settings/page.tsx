@@ -4,7 +4,6 @@ import { createClient } from "@/lib/supabase/server";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import ApiKeyManager from "@/components/settings/ApiKeyManager";
 import {
   Table,
   TableBody,
@@ -70,11 +69,6 @@ export default async function SettingsPage() {
             </p>
           </CardContent>
         </Card>
-      </section>
-
-      {/* Anthropic API key (BYOK) */}
-      <section className="mb-8">
-        <ApiKeyManager />
       </section>
 
       {/* Members */}

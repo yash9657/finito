@@ -19,12 +19,14 @@ import type {
   ApFlag,
   ApFlagCategory,
   AutoApproveItem,
+  DagStepDefinition,
   HoldForReviewItem,
   Invoice,
+  LlmFn,
+  LlmInvokeResult,
   MatchConfidence,
   PurchaseOrder,
   StepContext,
-  StepDefinition,
   StepResult,
   StepSource,
 } from "@/lib/types";
@@ -35,7 +37,6 @@ import {
 } from "@/lib/types";
 import { matchAp, withinTolerance } from "@/lib/agents/matching";
 import type { ApMatchPass } from "@/lib/agents/matching";
-import { callClaude } from "@/lib/agents/client";
 import type { z } from "zod";
 
 /* -------------------------------------------------------------------------- */
@@ -107,32 +108,35 @@ function dollars(cents: number): string {
  * second failure throws (D3 — one retry with the error appended, then step error).
  */
 async function callWithValidation<T>(opts: {
+  llm: LlmFn;
   system: string;
   user: string;
   schema: z.ZodType<T>;
-  apiKey: string;
   validate: (data: T) => string | null;
-}): Promise<{ data: T; reasoning: string }> {
+}): Promise<LlmInvokeResult<T>> {
   let lastError = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const user =
       attempt === 0
         ? opts.user
         : `${opts.user}\n\nYour previous response had a problem: ${lastError}. Fix it and return corrected JSON.`;
-    const res = await callClaude<T>({ system: opts.system, user, schema: opts.schema, apiKey: opts.apiKey });
+    const res = await opts.llm({ system: opts.system, user, schema: opts.schema });
     const err = opts.validate(res.data);
     if (err === null) return res;
     lastError = err;
   }
-  throw new Error(`Claude output failed post-validation after retry: ${lastError}`);
+  throw new Error(`Model output failed post-validation after retry: ${lastError}`);
 }
 
 /* -------------------------------------------------------------------------- */
 /* Step 1 (Track A) — Parse purchase orders (deterministic).                   */
 /* -------------------------------------------------------------------------- */
 
-const parsePos: StepDefinition = {
+const parsePos: DagStepDefinition = {
+  key: "parse_pos",
   stepNumber: 1,
+  dependsOn: [],
+  role: "parser",
   track: "A",
   name: "Parse purchase orders",
   kind: "deterministic",
@@ -158,8 +162,11 @@ const parsePos: StepDefinition = {
 /* Step 2 (Track B) — Parse invoices (deterministic).                          */
 /* -------------------------------------------------------------------------- */
 
-const parseInvoices: StepDefinition = {
+const parseInvoices: DagStepDefinition = {
+  key: "parse_invoices",
   stepNumber: 2,
+  dependsOn: [],
+  role: "parser",
   track: "B",
   name: "Parse invoices",
   kind: "deterministic",
@@ -187,8 +194,11 @@ const parseInvoices: StepDefinition = {
 
 const AP_MATCH_SYSTEM = `You are an accounts-payable specialist matching supplier invoices to purchase orders. You are given unmatched invoices, unmatched purchase orders, and candidate pairs a deterministic matcher flagged as possibly related. Decide which candidate pairs are true matches. A true match is the same procurement: the same vendor and the same goods/services, allowing for small amount differences (freight, tax, minor billing variance) and vendor-name spelling variation. Never match an invoice to a purchase order for clearly different goods or a different vendor that merely shares a similar amount. Only reference invoice and PO IDs that appear in the data provided.`;
 
-const matchInvoicesToPos: StepDefinition = {
+const matchInvoicesToPos: DagStepDefinition = {
+  key: "match_invoices",
   stepNumber: 3,
+  dependsOn: ["parse_pos", "parse_invoices"],
+  role: "matcher",
   track: "main",
   name: "Match invoices to POs",
   kind: "llm",
@@ -211,6 +221,7 @@ const matchInvoicesToPos: StepDefinition = {
 
     let reasoning: string;
     let adjudicatedCount = 0;
+    let llmMeta: StepResult["llmMeta"];
 
     if (pass.candidatePairs.length > 0) {
       const residualInvoiceIds = new Set(pass.unmatchedInvoices.map((i) => i.id));
@@ -242,11 +253,11 @@ const matchInvoicesToPos: StepDefinition = {
         })),
       });
 
-      const { data, reasoning: llmReasoning } = await callWithValidation({
+      const { data, reasoning: llmReasoning, meta } = await callWithValidation({
+        llm: ctx.llm,
         system: AP_MATCH_SYSTEM,
         user,
         schema: apMatchAdjudicationSchema,
-        apiKey: ctx.apiKey,
         validate: (d) => {
           const seenInv = new Set<string>();
           const seenPo = new Set<string>();
@@ -291,6 +302,7 @@ const matchInvoicesToPos: StepDefinition = {
         });
       }
       reasoning = llmReasoning;
+      llmMeta = meta;
     } else {
       reasoning = `Deterministic matching resolved all matchable invoices; no ambiguous candidate pairs required adjudication. ${pass.matchedPairs.length} invoice(s) matched to POs.`;
     }
@@ -316,6 +328,7 @@ const matchInvoicesToPos: StepDefinition = {
       output,
       reasoning,
       sources: [fileNote(ctx, "invoice"), fileNote(ctx, "po")],
+      llmMeta,
     };
   },
 };
@@ -332,8 +345,11 @@ interface FlagCandidate {
   facts: Record<string, unknown>;
 }
 
-const flagInvoices: StepDefinition = {
+const flagInvoices: DagStepDefinition = {
+  key: "flag_invoices",
   stepNumber: 4,
+  dependsOn: ["match_invoices"],
+  role: "classifier",
   track: "main",
   name: "Flag invoices",
   kind: "llm",
@@ -343,7 +359,7 @@ const flagInvoices: StepDefinition = {
     const invById = new Map(invoices.map((i) => [i.id, i]));
     const poById = new Map(pos.map((p) => [p.id, p]));
 
-    const match = ctx.priorOutputs[3] as ApMatchStepOutput;
+    const match = ctx.priorOutputs["match_invoices"] as ApMatchStepOutput;
 
     // ---- Code-detected flag candidates (item + category are code-controlled). ----
     const today = new Date().toISOString().slice(0, 10);
@@ -420,6 +436,7 @@ const flagInvoices: StepDefinition = {
 
     let flags: ApFlagEntry[] = [];
     let reasoning: string;
+    let llmMeta: StepResult["llmMeta"];
 
     if (candidates.length > 0) {
       const user = JSON.stringify({
@@ -430,11 +447,11 @@ const flagInvoices: StepDefinition = {
         })),
       });
 
-      const { data, reasoning: llmReasoning } = await callWithValidation({
+      const { data, reasoning: llmReasoning, meta } = await callWithValidation({
+        llm: ctx.llm,
         system: AP_FLAG_SYSTEM,
         user,
         schema: apFlagsSchema,
-        apiKey: ctx.apiKey,
         validate: (d) => {
           const got = new Set(d.flags.map(keyOf));
           const missing = candidates.filter((c) => !got.has(keyOf(c)));
@@ -463,6 +480,7 @@ const flagInvoices: StepDefinition = {
         };
       });
       reasoning = llmReasoning;
+      llmMeta = meta;
     } else {
       reasoning =
         "No exceptions detected: every invoice matched a purchase order within tolerance, with no duplicates or past-due dates.";
@@ -479,6 +497,7 @@ const flagInvoices: StepDefinition = {
           note: `${candidates.length} flag(s) across ${wanted.size} invoice(s)`,
         },
       ],
+      llmMeta,
     };
   },
 };
@@ -489,15 +508,18 @@ const flagInvoices: StepDefinition = {
 
 const AP_QUEUE_SYSTEM = `You are an accounts-payable manager summarising an approval queue for a finance reviewer. Given the counts and amounts for auto-approvable invoices (matched to a PO within tolerance, no flags) and the invoices held for review with their flags, write a concise 3-4 sentence narrative: state how many invoices and what total value can be auto-approved, summarise why the held invoices need attention, and highlight the highest-risk category. Professional and factual, no filler.`;
 
-const approvalQueue: StepDefinition = {
+const approvalQueue: DagStepDefinition = {
+  key: "approval_queue",
   stepNumber: 5,
+  dependsOn: ["flag_invoices"],
+  role: "writer",
   track: "main",
   name: "Approval queue",
   kind: "llm",
   async run(ctx: StepContext): Promise<StepResult> {
     const invoices = invoicesFrom(ctx);
-    const match = ctx.priorOutputs[3] as ApMatchStepOutput;
-    const flagStep = ctx.priorOutputs[4] as ApFlagStepOutput;
+    const match = ctx.priorOutputs["match_invoices"] as ApMatchStepOutput;
+    const flagStep = ctx.priorOutputs["flag_invoices"] as ApFlagStepOutput;
 
     const poByInvoice = new Map(match.matchedPairs.map((m) => [m.invoiceId, m.poId]));
     const flagsByInvoice = new Map<string, ApFlag[]>();
@@ -538,7 +560,7 @@ const approvalQueue: StepDefinition = {
       flagCategoryTally[f.category] = (flagCategoryTally[f.category] ?? 0) + 1;
     }
 
-    const { data: narr, reasoning } = await callClaude({
+    const { data: narr, reasoning, meta } = await ctx.llm({
       system: AP_QUEUE_SYSTEM,
       user: JSON.stringify({
         autoApprove: {
@@ -557,7 +579,6 @@ const approvalQueue: StepDefinition = {
         },
       }),
       schema: apQueueNarrativeSchema,
-      apiKey: ctx.apiKey,
     });
 
     const output: ApApprovalQueue = {
@@ -581,6 +602,7 @@ const approvalQueue: StepDefinition = {
           note: `${autoApprove.length} auto-approve, ${holdForReview.length} held for review`,
         },
       ],
+      llmMeta: meta,
     };
   },
 };
@@ -589,7 +611,7 @@ const approvalQueue: StepDefinition = {
 /* Exported step list. Step 6 (human review) is a status gate — no row (§8).   */
 /* -------------------------------------------------------------------------- */
 
-export const apMatchingSteps: StepDefinition[] = [
+export const apMatchingSteps: DagStepDefinition[] = [
   parsePos,
   parseInvoices,
   matchInvoicesToPos,

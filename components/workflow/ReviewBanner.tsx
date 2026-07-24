@@ -31,8 +31,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import MissingKeyNotice from "@/components/workflow/MissingKeyNotice";
-import { hasStoredKey, runHeaders } from "@/lib/anthropic-key";
 import { formatDateTime } from "@/lib/format";
 import type {
   WorkflowRow,
@@ -54,7 +52,7 @@ export default function ReviewBanner({
   const [comment, setComment] = React.useState("");
   const [pending, setPending] = React.useState<ReviewDecisionValue | null>(null);
   const [rerunning, setRerunning] = React.useState(false);
-  const [missingKey, setMissingKey] = React.useState(false);
+  const [needsProvider, setNeedsProvider] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const busy = pending !== null;
@@ -87,24 +85,21 @@ export default function ReviewBanner({
   }
 
   async function rerun() {
-    // BYOK guard: without a key stored in this browser, don't call /run.
-    if (!hasStoredKey()) {
-      setMissingKey(true);
-      return;
-    }
-    setMissingKey(false);
+    setNeedsProvider(false);
     setError(null);
     setRerunning(true);
     try {
-      const res = await fetch(`/api/workflows/${workflow.id}/run`, {
-        method: "POST",
-        headers: runHeaders(),
-      });
+      const res = await fetch(`/api/workflows/${workflow.id}/run`, { method: "POST" });
       if (!res.ok && res.status !== 202) {
         const body = (await res.json().catch(() => null)) as
           | { error?: string }
           | null;
-        throw new Error(body?.error ?? `Re-run failed (${res.status})`);
+        const message = body?.error ?? `Re-run failed (${res.status})`;
+        if (res.status === 400 && /provider configured/i.test(message)) {
+          setNeedsProvider(true);
+          return;
+        }
+        throw new Error(message);
       }
       onDecided();
     } catch (e) {
@@ -221,7 +216,17 @@ export default function ReviewBanner({
         {error && (
           <p className="mb-3 font-mono text-xs text-error">{error}</p>
         )}
-        {missingKey && <MissingKeyNotice className="mb-3" />}
+        {needsProvider && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-warning/50 bg-warning/10 px-4 py-3 text-sm text-warning">
+            <span>No LLM provider configured for your organization.</span>
+            <Link
+              href="/settings/models"
+              className="font-medium underline underline-offset-4 hover:opacity-80"
+            >
+              Configure one in Settings → Models →
+            </Link>
+          </div>
+        )}
         <Button variant="outline" onClick={rerun} disabled={rerunning}>
           {rerunning ? (
             <Loader2 className="h-4 w-4 animate-spin" />

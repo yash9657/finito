@@ -10,7 +10,6 @@
  * appended, then the step errors. Money is integer cents throughout (D7).
  */
 
-import { callClaude } from "@/lib/agents/client";
 import {
   reconcile,
   nearestMiss,
@@ -18,14 +17,17 @@ import {
   type NearestMiss,
 } from "@/lib/agents/matching";
 import { centsToDollars } from "@/lib/format";
+import type { z } from "zod";
 import {
   matchAdjudicationSchema,
   exceptionFlagsSchema,
   reportNarrativeSchema,
   type MatchAdjudication,
   type ExceptionFlags,
+  type DagStepDefinition,
+  type LlmFn,
+  type LlmInvokeResult,
   type StepContext,
-  type StepDefinition,
   type StepResult,
   type StepSource,
   type ParsedFile,
@@ -68,36 +70,38 @@ function requireParsedFile(ctx: StepContext, fileType: string): ParsedFile {
   return pf;
 }
 
-/** Read a prior step's output as a ParsedFile (steps 1 & 2 output the ParsedFile). */
-function priorParsedFile(ctx: StepContext, stepNumber: number): ParsedFile {
-  const out = ctx.priorOutputs[stepNumber];
+/** Read a prior step's output as a ParsedFile (parse steps output the ParsedFile). */
+function priorParsedFile(ctx: StepContext, stepKey: string): ParsedFile {
+  const out = ctx.priorOutputs[stepKey];
   if (!out || typeof out !== "object" || !("rows" in out)) {
-    throw new Error(`Step ${stepNumber} output is missing or not a parsed file`);
+    throw new Error(`Step "${stepKey}" output is missing or not a parsed file`);
   }
   return out as ParsedFile;
 }
 
 /**
- * Call Claude, then run an in-code post-validation over the returned structured data.
- * On a business-rule failure (e.g. an ID that does not exist, or is reused), append the
- * error to the user message and retry exactly once (D3); a second failure throws.
+ * Call the model via `ctx.llm`, then run an in-code post-validation over the returned
+ * structured data. On a business-rule failure (e.g. an ID that does not exist, or is
+ * reused), append the error to the user message and retry exactly once (D3); a second
+ * failure throws. Returns the final `LlmInvokeResult` so the caller can pass through
+ * `meta` as `llmMeta`.
  */
 async function callWithPostValidation<T>(opts: {
+  llm: LlmFn;
   system: string;
   user: string;
-  schema: Parameters<typeof callClaude<T>>[0]["schema"];
-  apiKey: string;
+  schema: z.ZodType<T>;
   validate: (data: T) => string | null;
-}): Promise<{ data: T; reasoning: string }> {
-  const { system, schema, apiKey, validate } = opts;
+}): Promise<LlmInvokeResult<T>> {
+  const { llm, system, schema, validate } = opts;
   let user = opts.user;
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await callClaude<T>({ system, user, schema, apiKey });
+    const result = await llm({ system, user, schema });
     const problem = validate(result.data);
     if (problem === null) return result;
     if (attempt === 1) {
-      throw new Error(`Claude output failed post-validation after retry: ${problem}`);
+      throw new Error(`Model output failed post-validation after retry: ${problem}`);
     }
     user = `${opts.user}\n\nYour previous response was invalid: ${problem}. Reference only IDs present in the data above, never reuse an ID, and return corrected JSON.`;
   }
@@ -110,13 +114,17 @@ async function callWithPostValidation<T>(opts: {
 /* -------------------------------------------------------------------------- */
 
 function parseStep(
+  key: string,
   stepNumber: number,
   track: "A" | "B",
   name: string,
   fileType: "erp_export" | "bank_statement",
-): StepDefinition {
+): DagStepDefinition {
   return {
+    key,
     stepNumber,
+    dependsOn: [],
+    role: "parser",
     track,
     name,
     kind: "deterministic",
@@ -203,14 +211,17 @@ function validateAdjudication(
   return problems.length > 0 ? problems.join("; ") : null;
 }
 
-const matchStep: StepDefinition = {
+const matchStep: DagStepDefinition = {
+  key: "match",
   stepNumber: 3,
+  dependsOn: ["parse_erp", "parse_bank"],
+  role: "matcher",
   track: "main",
   name: "Match transactions",
   kind: "llm",
   async run(ctx: StepContext): Promise<StepResult> {
-    const erpFile = priorParsedFile(ctx, 1);
-    const bankFile = priorParsedFile(ctx, 2);
+    const erpFile = priorParsedFile(ctx, "parse_erp");
+    const bankFile = priorParsedFile(ctx, "parse_bank");
     const erp = erpFile.rows as unknown as ErpTxn[];
     const bank = bankFile.rows as unknown as BankTxn[];
     const erpById = new Map(erp.map((e) => [e.id, e]));
@@ -220,6 +231,7 @@ const matchStep: StepDefinition = {
 
     let confirmed: MatchAdjudication["confirmedMatches"] = [];
     let reasoning: string;
+    let llmMeta: StepResult["llmMeta"];
 
     if (pass.candidatePairs.length === 0) {
       reasoning =
@@ -227,16 +239,16 @@ const matchStep: StepDefinition = {
         `found no ambiguous candidate pairs, so no LLM adjudication was required. ` +
         `${pass.duplicates.length} duplicate bank row(s) excluded.`;
     } else {
-      const { data, reasoning: llmReasoning } =
-        await callWithPostValidation<MatchAdjudication>({
-          system: MATCH_SYSTEM,
-          user: buildMatchUser(pass, erp, bank),
-          schema: matchAdjudicationSchema,
-          apiKey: ctx.apiKey,
-          validate: (d) => validateAdjudication(d, pass),
-        });
-      confirmed = data.confirmedMatches;
-      reasoning = llmReasoning;
+      const result = await callWithPostValidation<MatchAdjudication>({
+        llm: ctx.llm,
+        system: MATCH_SYSTEM,
+        user: buildMatchUser(pass, erp, bank),
+        schema: matchAdjudicationSchema,
+        validate: (d) => validateAdjudication(d, pass),
+      });
+      confirmed = result.data.confirmedMatches;
+      reasoning = result.reasoning;
+      llmMeta = result.meta;
     }
 
     // Merge confirmed matches with the exact deterministic ones; recompute everything.
@@ -275,7 +287,7 @@ const matchStep: StepDefinition = {
       { file: bankFile.meta.filename || "bank_statement", note: `sha256:${bankFile.meta.sha256}` },
     ];
 
-    return { output, reasoning, sources };
+    return { output, reasoning, sources, llmMeta };
   },
 };
 
@@ -356,14 +368,17 @@ function validateFlags(data: ExceptionFlags, match: ReconMatchResult): string | 
   return problems.length > 0 ? `You ${problems.join("; and you ")}` : null;
 }
 
-const flagStep: StepDefinition = {
+const flagStep: DagStepDefinition = {
+  key: "flag",
   stepNumber: 4,
+  dependsOn: ["match"],
+  role: "classifier",
   track: "main",
   name: "Flag exceptions",
   kind: "llm",
   async run(ctx: StepContext): Promise<StepResult> {
-    const match = ctx.priorOutputs[3] as ReconMatchResult | undefined;
-    if (!match) throw new Error("Step 3 (match) output is missing");
+    const match = ctx.priorOutputs["match"] as ReconMatchResult | undefined;
+    if (!match) throw new Error('Step "match" output is missing');
 
     // Nothing unmatched → nothing to flag; skip the LLM call entirely.
     if (match.unmatchedErp.length === 0 && match.unmatchedBank.length === 0) {
@@ -375,11 +390,11 @@ const flagStep: StepDefinition = {
       };
     }
 
-    const { data, reasoning } = await callWithPostValidation<ExceptionFlags>({
+    const { data, reasoning, meta } = await callWithPostValidation<ExceptionFlags>({
+      llm: ctx.llm,
       system: FLAG_SYSTEM,
       user: buildFlagUser(match),
       schema: exceptionFlagsSchema,
-      apiKey: ctx.apiKey,
       validate: (d) => validateFlags(d, match),
     });
 
@@ -387,6 +402,7 @@ const flagStep: StepDefinition = {
       output: { flags: data.flags },
       reasoning,
       sources: [],
+      llmMeta: meta,
     };
   },
 };
@@ -420,20 +436,23 @@ function lookupFlag(
   };
 }
 
-const reportStep: StepDefinition = {
+const reportStep: DagStepDefinition = {
+  key: "report",
   stepNumber: 5,
+  dependsOn: ["flag"],
+  role: "writer",
   track: "main",
   name: "Generate reconciliation report",
   kind: "llm",
   async run(ctx: StepContext): Promise<StepResult> {
-    const erpFile = priorParsedFile(ctx, 1);
-    const bankFile = priorParsedFile(ctx, 2);
+    const erpFile = priorParsedFile(ctx, "parse_erp");
+    const bankFile = priorParsedFile(ctx, "parse_bank");
     const erp = erpFile.rows as unknown as ErpTxn[];
     const bank = bankFile.rows as unknown as BankTxn[];
 
-    const match = ctx.priorOutputs[3] as ReconMatchResult | undefined;
-    if (!match) throw new Error("Step 3 (match) output is missing");
-    const flagOut = ctx.priorOutputs[4] as { flags: ExceptionFlags["flags"] } | undefined;
+    const match = ctx.priorOutputs["match"] as ReconMatchResult | undefined;
+    if (!match) throw new Error('Step "match" output is missing');
+    const flagOut = ctx.priorOutputs["flag"] as { flags: ExceptionFlags["flags"] } | undefined;
     const flags = flagOut?.flags ?? [];
 
     // --- All totals computed in code (D3); Claude never supplies a number. ---
@@ -493,11 +512,10 @@ const reportStep: StepDefinition = {
       ],
     };
 
-    const { data, reasoning } = await callClaude({
+    const { data, reasoning, meta } = await ctx.llm({
       system: NARRATIVE_SYSTEM,
       user: `Computed reconciliation summary (amounts are decimal dollars):\n${JSON.stringify(narrativeInput, null, 2)}`,
       schema: reportNarrativeSchema,
-      apiKey: ctx.apiKey,
     });
 
     const summary: ReconReportSummary = {
@@ -522,7 +540,7 @@ const reportStep: StepDefinition = {
       { file: bankFile.meta.filename || "bank_statement", note: `sha256:${bankFile.meta.sha256}` },
     ];
 
-    return { output: summary, reasoning, sources };
+    return { output: summary, reasoning, sources, llmMeta: meta };
   },
 };
 
@@ -530,9 +548,9 @@ const reportStep: StepDefinition = {
 /* Exported step list (§7 steps 1–5; step 6 is a status gate, not a row).      */
 /* -------------------------------------------------------------------------- */
 
-export const reconciliationSteps: StepDefinition[] = [
-  parseStep(1, "A", "Parse ERP export", "erp_export"),
-  parseStep(2, "B", "Parse bank statement", "bank_statement"),
+export const reconciliationSteps: DagStepDefinition[] = [
+  parseStep("parse_erp", 1, "A", "Parse ERP export", "erp_export"),
+  parseStep("parse_bank", 2, "B", "Parse bank statement", "bank_statement"),
   matchStep,
   flagStep,
   reportStep,

@@ -16,7 +16,11 @@ import { getProvider } from "@/lib/llm/providers";
 import { toJsonSchema } from "@/lib/llm/json-schema";
 import { redactAndCap } from "@/lib/llm/redact";
 import { decryptApiKey } from "@/lib/llm/crypto";
-import type { OrgModelConfig, WorkflowType } from "@/lib/types";
+import type {
+  LlmInvokeResult,
+  OrgModelConfig,
+  WorkflowType,
+} from "@/lib/types";
 
 type SupabaseAdmin = ReturnType<typeof createAdminClient>;
 
@@ -42,21 +46,6 @@ export interface ResolvedProvider {
   baseUrl?: string;
   /** Set when the pinned step-config was inactive and we fell back (D-P7 step 1). */
   warning?: string;
-}
-
-export interface InvokeMeta {
-  providerId: ProviderId;
-  modelUsed: string;
-  tokensIn: number;
-  tokensOut: number;
-  latencyMs: number;
-  raw: unknown; // already redacted+capped (D-P11)
-}
-
-export interface InvokeResult<T> {
-  data: T;
-  reasoning: string; // reasoningNative || data.reasoning fallback
-  meta: InvokeMeta;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -171,7 +160,7 @@ function fallbackReasoning(data: unknown): string {
 export async function invoke<T>(
   resolved: ResolvedProvider,
   opts: { system: string; user: string; schema: z.ZodType<T> },
-): Promise<InvokeResult<T>> {
+): Promise<LlmInvokeResult<T>> {
   const { system, user, schema } = opts;
   const jsonSchema = toJsonSchema(schema);
 
