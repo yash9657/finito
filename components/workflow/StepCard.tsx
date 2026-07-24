@@ -96,7 +96,9 @@ export default function StepCard({ step }: { step: StepRow }) {
     prevStatus.current = step.status;
   }, [step.status]);
 
-  const isLlm = step.model !== null;
+  // A provenance footer shows once a provider actually ran (D-P14). Deterministic steps
+  // and the skip-adjudication path leave provider_used null.
+  const hasProvenance = step.provider_used !== null && step.provider_used !== undefined;
   const hasInput = step.input_snapshot !== null && step.input_snapshot !== undefined;
   const hasOutput = step.output !== null && step.output !== undefined;
   const hasSources = Array.isArray(step.sources) && step.sources.length > 0;
@@ -188,19 +190,19 @@ export default function StepCard({ step }: { step: StepRow }) {
             <p className="text-muted">No details recorded for this step.</p>
           )}
 
-          {isLlm && (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-2 text-[10px] text-muted">
-              <span>
-                Model: <span className="text-foreground/70">{step.model}</span>
+          {hasProvenance && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2 text-[10px] text-muted">
+              <span className="text-foreground/70">
+                {step.provider_used}:{step.model}
               </span>
-              {step.input_hash && (
+              {step.tokens_in !== null && step.tokens_out !== null && (
                 <span>
-                  Input hash:{" "}
-                  <span className="text-foreground/70">
-                    {shortHash(step.input_hash)}
-                  </span>
+                  {step.tokens_in.toLocaleString("en-US")}→
+                  {step.tokens_out.toLocaleString("en-US")} tok
                 </span>
               )}
+              {step.latency_ms !== null && <span>{(step.latency_ms / 1000).toFixed(1)}s</span>}
+              {step.input_hash && <span>hash {shortHash(step.input_hash)}</span>}
             </div>
           )}
         </div>

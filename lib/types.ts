@@ -435,10 +435,15 @@ export interface WorkflowRow {
   completed_at: string | null;
 }
 
-/** One `steps[]` entry in the /status body (projected subset of `WorkflowStep`). */
+/**
+ * One `steps[]` entry in the /status body (projected subset of `WorkflowStep`).
+ * NOTE: `llm_raw` is deliberately excluded (D-P11 / §7) — it is DB-only audit data and
+ * never sent to the browser.
+ */
 export interface StepRow {
   id: string;
   step_number: number;
+  step_key: string | null;
   track: Track;
   name: string;
   status: StepStatus;
@@ -447,6 +452,10 @@ export interface StepRow {
   output: unknown | null;
   sources: StepSource[] | null;
   model: string | null;
+  provider_used: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  latency_ms: number | null;
   input_hash: string | null;
   started_at: string | null;
   completed_at: string | null;

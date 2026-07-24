@@ -120,9 +120,11 @@ export async function GET(
       created_at: workflow.created_at,
       completed_at: workflow.completed_at,
     },
+    // NOTE: llm_raw is deliberately NOT projected here (D-P11 / §7) — it stays DB-only.
     steps: steps.map((s) => ({
       id: s.id,
       step_number: s.step_number,
+      step_key: s.step_key,
       track: s.track,
       name: s.name,
       status: s.status,
@@ -131,6 +133,10 @@ export async function GET(
       output: s.output,
       sources: s.sources,
       model: s.model,
+      provider_used: s.provider_used,
+      tokens_in: s.tokens_in,
+      tokens_out: s.tokens_out,
+      latency_ms: s.latency_ms,
       input_hash: s.input_hash,
       started_at: s.started_at,
       completed_at: s.completed_at,

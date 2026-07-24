@@ -91,6 +91,7 @@ export default async function ReportPage({
   const stepRows: StepRow[] = steps.map((s) => ({
     id: s.id,
     step_number: s.step_number,
+    step_key: s.step_key,
     track: s.track,
     name: s.name,
     status: s.status,
@@ -99,6 +100,10 @@ export default async function ReportPage({
     output: s.output,
     sources: s.sources,
     model: s.model,
+    provider_used: s.provider_used,
+    tokens_in: s.tokens_in,
+    tokens_out: s.tokens_out,
+    latency_ms: s.latency_ms,
     input_hash: s.input_hash,
     started_at: s.started_at,
     completed_at: s.completed_at,
