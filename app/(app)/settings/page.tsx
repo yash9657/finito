@@ -1,5 +1,6 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { LogOut, Cpu, ChevronRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -69,6 +70,24 @@ export default async function SettingsPage() {
             </p>
           </CardContent>
         </Card>
+      </section>
+
+      {/* Models */}
+      <section className="mb-8">
+        <Link href="/settings/models" className="block">
+          <Card className="transition-colors hover:border-muted">
+            <CardContent className="flex items-center gap-4 p-4">
+              <Cpu className="h-5 w-5 text-accent" strokeWidth={1.75} />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="font-medium">Models</span>
+                <span className="text-xs text-muted">
+                  Configure LLM providers and per-step model assignments.
+                </span>
+              </div>
+              <ChevronRight className="h-4 w-4 text-muted" />
+            </CardContent>
+          </Card>
+        </Link>
       </section>
 
       {/* Members */}
