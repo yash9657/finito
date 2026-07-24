@@ -105,6 +105,7 @@ async function callWithValidation<T>(opts: {
   system: string;
   user: string;
   schema: z.ZodType<T>;
+  apiKey: string;
   validate: (data: T) => string | null;
 }): Promise<{ data: T; reasoning: string }> {
   let lastError = "";
@@ -113,7 +114,7 @@ async function callWithValidation<T>(opts: {
       attempt === 0
         ? opts.user
         : `${opts.user}\n\nYour previous response had a problem: ${lastError}. Fix it and return corrected JSON.`;
-    const res = await callClaude<T>({ system: opts.system, user, schema: opts.schema });
+    const res = await callClaude<T>({ system: opts.system, user, schema: opts.schema, apiKey: opts.apiKey });
     const err = opts.validate(res.data);
     if (err === null) return res;
     lastError = err;
@@ -325,6 +326,7 @@ const commentary: StepDefinition = {
         })),
       }),
       schema: fpaCommentarySchema,
+      apiKey: ctx.apiKey,
       validate: (d) => {
         const got = new Set(d.varianceComments.map((c) => dcKey(c.department, c.category)));
         const missing = material.filter((m) => !got.has(dcKey(m.department, m.category)));
@@ -413,6 +415,7 @@ const boardDeck: StepDefinition = {
         })),
       }),
       schema: fpaBoardDeckSchema,
+      apiKey: ctx.apiKey,
       validate: (d) => {
         const got = new Set(d.departmentSummaries.map((s) => norm(s.department)));
         const missing = departments.filter((dp) => !got.has(norm(dp.department)));

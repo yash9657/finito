@@ -23,7 +23,7 @@ const REQUIRED_FILES: Record<WorkflowType, FileType[]> = {
  * then fire the idempotent+resumable runner in the background (D2) and return 202.
  */
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
@@ -31,6 +31,14 @@ export async function POST(
   const g = await requireWorkflowAccess(id);
   if (!g.ok) return g.response;
   const { admin, profile, workflow } = g;
+
+  // BYOK: the key rides in the request header only (never a JSON body, so it can't land
+  // in a body log or input_snapshot). Fall back to the server env for self-host/dev.
+  // The key is used transiently and is NEVER logged, persisted, or put in an audit detail.
+  const apiKey = req.headers.get("x-anthropic-api-key") ?? process.env.ANTHROPIC_API_KEY ?? "";
+  if (!apiKey) {
+    return jsonError("No Anthropic API key provided", 400);
+  }
 
   // Re-running after a crash/failure = resume (D2). Only idle or error may launch.
   if (workflow.status !== "idle" && workflow.status !== "error") {
@@ -83,9 +91,9 @@ export async function POST(
   // Fallback (§15): if waitUntil is unavailable at runtime, fire-and-catch.
   try {
     const { waitUntil } = await import("@vercel/functions");
-    waitUntil(runWorkflow(id));
+    waitUntil(runWorkflow(id, apiKey));
   } catch {
-    void runWorkflow(id).catch((err: unknown) => {
+    void runWorkflow(id, apiKey).catch((err: unknown) => {
       console.error(`[run] background runWorkflow(${id}) failed:`, err);
     });
   }

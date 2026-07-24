@@ -110,6 +110,7 @@ async function callWithValidation<T>(opts: {
   system: string;
   user: string;
   schema: z.ZodType<T>;
+  apiKey: string;
   validate: (data: T) => string | null;
 }): Promise<{ data: T; reasoning: string }> {
   let lastError = "";
@@ -118,7 +119,7 @@ async function callWithValidation<T>(opts: {
       attempt === 0
         ? opts.user
         : `${opts.user}\n\nYour previous response had a problem: ${lastError}. Fix it and return corrected JSON.`;
-    const res = await callClaude<T>({ system: opts.system, user, schema: opts.schema });
+    const res = await callClaude<T>({ system: opts.system, user, schema: opts.schema, apiKey: opts.apiKey });
     const err = opts.validate(res.data);
     if (err === null) return res;
     lastError = err;
@@ -245,6 +246,7 @@ const matchInvoicesToPos: StepDefinition = {
         system: AP_MATCH_SYSTEM,
         user,
         schema: apMatchAdjudicationSchema,
+        apiKey: ctx.apiKey,
         validate: (d) => {
           const seenInv = new Set<string>();
           const seenPo = new Set<string>();
@@ -432,6 +434,7 @@ const flagInvoices: StepDefinition = {
         system: AP_FLAG_SYSTEM,
         user,
         schema: apFlagsSchema,
+        apiKey: ctx.apiKey,
         validate: (d) => {
           const got = new Set(d.flags.map(keyOf));
           const missing = candidates.filter((c) => !got.has(keyOf(c)));
@@ -554,6 +557,7 @@ const approvalQueue: StepDefinition = {
         },
       }),
       schema: apQueueNarrativeSchema,
+      apiKey: ctx.apiKey,
     });
 
     const output: ApApprovalQueue = {

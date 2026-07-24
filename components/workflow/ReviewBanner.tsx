@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import MissingKeyNotice from "@/components/workflow/MissingKeyNotice";
+import { hasStoredKey, runHeaders } from "@/lib/anthropic-key";
 import { formatDateTime } from "@/lib/format";
 import type {
   WorkflowRow,
@@ -52,6 +54,7 @@ export default function ReviewBanner({
   const [comment, setComment] = React.useState("");
   const [pending, setPending] = React.useState<ReviewDecisionValue | null>(null);
   const [rerunning, setRerunning] = React.useState(false);
+  const [missingKey, setMissingKey] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const busy = pending !== null;
@@ -84,11 +87,18 @@ export default function ReviewBanner({
   }
 
   async function rerun() {
+    // BYOK guard: without a key stored in this browser, don't call /run.
+    if (!hasStoredKey()) {
+      setMissingKey(true);
+      return;
+    }
+    setMissingKey(false);
     setError(null);
     setRerunning(true);
     try {
       const res = await fetch(`/api/workflows/${workflow.id}/run`, {
         method: "POST",
+        headers: runHeaders(),
       });
       if (!res.ok && res.status !== 202) {
         const body = (await res.json().catch(() => null)) as
@@ -211,6 +221,7 @@ export default function ReviewBanner({
         {error && (
           <p className="mb-3 font-mono text-xs text-error">{error}</p>
         )}
+        {missingKey && <MissingKeyNotice className="mb-3" />}
         <Button variant="outline" onClick={rerun} disabled={rerunning}>
           {rerunning ? (
             <Loader2 className="h-4 w-4 animate-spin" />

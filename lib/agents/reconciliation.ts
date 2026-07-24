@@ -86,13 +86,14 @@ async function callWithPostValidation<T>(opts: {
   system: string;
   user: string;
   schema: Parameters<typeof callClaude<T>>[0]["schema"];
+  apiKey: string;
   validate: (data: T) => string | null;
 }): Promise<{ data: T; reasoning: string }> {
-  const { system, schema, validate } = opts;
+  const { system, schema, apiKey, validate } = opts;
   let user = opts.user;
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await callClaude<T>({ system, user, schema });
+    const result = await callClaude<T>({ system, user, schema, apiKey });
     const problem = validate(result.data);
     if (problem === null) return result;
     if (attempt === 1) {
@@ -231,6 +232,7 @@ const matchStep: StepDefinition = {
           system: MATCH_SYSTEM,
           user: buildMatchUser(pass, erp, bank),
           schema: matchAdjudicationSchema,
+          apiKey: ctx.apiKey,
           validate: (d) => validateAdjudication(d, pass),
         });
       confirmed = data.confirmedMatches;
@@ -377,6 +379,7 @@ const flagStep: StepDefinition = {
       system: FLAG_SYSTEM,
       user: buildFlagUser(match),
       schema: exceptionFlagsSchema,
+      apiKey: ctx.apiKey,
       validate: (d) => validateFlags(d, match),
     });
 
@@ -494,6 +497,7 @@ const reportStep: StepDefinition = {
       system: NARRATIVE_SYSTEM,
       user: `Computed reconciliation summary (amounts are decimal dollars):\n${JSON.stringify(narrativeInput, null, 2)}`,
       schema: reportNarrativeSchema,
+      apiKey: ctx.apiKey,
     });
 
     const summary: ReconReportSummary = {

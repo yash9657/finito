@@ -28,12 +28,18 @@ cp .env.example .env.local
 NEXT_PUBLIC_SUPABASE_URL=        # your Supabase project URL
 NEXT_PUBLIC_SUPABASE_ANON_KEY=   # Supabase anon/public key (browser auth)
 SUPABASE_SERVICE_ROLE_KEY=       # server-only; never expose to the client
-ANTHROPIC_API_KEY=               # server-only; used by the agent runner
+ANTHROPIC_API_KEY=               # OPTIONAL self-host/dev fallback (see BYOK below)
 ```
 
 `.env.local` is gitignored. The two `NEXT_PUBLIC_*` values are safe in the
 browser; `SUPABASE_SERVICE_ROLE_KEY` and `ANTHROPIC_API_KEY` are used only in
 server code (API route handlers + the runner) and must never be sent to the client.
+
+`ANTHROPIC_API_KEY` is **optional**: FinFlow uses a Bring-Your-Own-Key model
+(each user supplies their own key from the browser — see
+[§ Bring Your Own Key](#bring-your-own-key-byok) below). Set the server-side
+`ANTHROPIC_API_KEY` only as a convenience fallback for local dev or a private
+self-hosted deployment.
 
 ## 3. Apply the database schema
 
@@ -71,9 +77,53 @@ npm run dev
 ```
 
 Open <http://localhost:3000>. Sign up (a profile is auto-created in the Demo Org),
-then: **Dashboard → New workflow → pick a type → upload files → Run**. The live
+then **enter your Anthropic API key in Settings first** (Settings → Anthropic API
+key → paste → Save → optionally "Test key"). The key is stored only in your
+browser — see [Bring Your Own Key](#bring-your-own-key-byok) below.
+
+Then: **Dashboard → New workflow → pick a type → upload files → Run**. The live
 view polls every 2s while the agents work; approve at the review gate to unlock the
 report + audit certificate (Print / Save as PDF from there, or download the XLSX).
+
+> Without a key stored in the browser, the wizard's **Launch** and the error
+> banner's **Re-run** show an inline "Add your Anthropic API key in Settings to
+> run" notice instead of calling the API.
+
+## Bring Your Own Key (BYOK)
+
+FinFlow runs on a **bring-your-own-key** model so the project stays open-source
+with zero inference cost or liability for whoever hosts it. Each user supplies
+their **own** Anthropic API key:
+
+- **Where it lives** — the key is held in **your browser only**
+  (`localStorage`, under `finflow_anthropic_key`). Enter it under
+  **Settings → Anthropic API key**.
+- **How it travels** — it is attached to each run request as the
+  `x-anthropic-api-key` **HTTP header** (never a JSON body), sent over HTTPS to
+  the FinFlow server, which uses it **transiently** to call Anthropic and then
+  discards it.
+- **What is never done with it** — the server **never persists** the key (no
+  database column, no file), **never logs or echoes** it, and never includes it
+  in any `/status` response, audit log, or step input snapshot.
+- **Testing** — the "Test key" button in Settings makes a single minimal
+  authenticated call (`POST /api/anthropic/test-key`) and reports Valid ✓ /
+  Invalid ✗ without storing anything server-side.
+
+**Optional server-side fallback.** For local development or a private,
+single-tenant self-hosted deployment you may instead set `ANTHROPIC_API_KEY` in
+the server environment; the runner falls back to it when no per-request key is
+supplied. Do **not** set it on a shared/public deployment — that would bill your
+key for every visitor.
+
+**Production hardening (recommended).** Because the key transits from the
+browser, always:
+
+- Serve the app over **HTTPS** (never plain HTTP) so the header is encrypted in
+  transit.
+- Set a strict **Content-Security-Policy** (and related headers) to reduce the
+  risk of a script exfiltrating the key from `localStorage` — e.g. lock
+  `default-src` / `script-src` to `'self'` and `connect-src` to your own origin,
+  and avoid third-party scripts on authenticated pages.
 
 ## 6. Useful scripts
 

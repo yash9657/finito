@@ -211,6 +211,11 @@ export interface StepContext {
   db: SupabaseClient; // admin client
   files: Record<string, ParsedFile>; // keyed by file_type
   priorOutputs: Record<number, unknown>; // step_number -> validated output
+  /**
+   * BYOK: the caller-supplied Anthropic API key for this run (§ BYOK). Held only for the
+   * duration of the run; NEVER logged, persisted, or written to any audit/snapshot field.
+   */
+  apiKey: string;
 }
 
 export interface StepResult {

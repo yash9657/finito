@@ -18,6 +18,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import FileDropzone from "@/components/workflow/FileDropzone";
+import MissingKeyNotice from "@/components/workflow/MissingKeyNotice";
+import { hasStoredKey, runHeaders } from "@/lib/anthropic-key";
 import { WORKFLOW_TYPES, type FileType, type WorkflowType } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
@@ -103,6 +105,7 @@ export default function NewWorkflowPage() {
 
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [missingKey, setMissingKey] = React.useState(false);
 
   const config = TYPE_CONFIG[selectedType];
   const requiredTypes = config.files.map((f) => f.fileType);
@@ -136,10 +139,19 @@ export default function NewWorkflowPage() {
   /* --- Stage 3: launch the run, then jump to the live view (§11.4). --- */
   async function launch() {
     if (!workflowId) return;
+    // BYOK guard: without a key stored in this browser, don't call /run.
+    if (!hasStoredKey()) {
+      setMissingKey(true);
+      return;
+    }
+    setMissingKey(false);
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch(`/api/workflows/${workflowId}/run`, { method: "POST" });
+      const res = await fetch(`/api/workflows/${workflowId}/run`, {
+        method: "POST",
+        headers: runHeaders(),
+      });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
         throw new Error(body?.error ?? "Failed to launch workflow");
@@ -312,6 +324,8 @@ export default function NewWorkflowPage() {
               );
             })}
           </Card>
+
+          {missingKey && <MissingKeyNotice />}
 
           <div className="flex justify-between">
             <Button variant="ghost" onClick={() => setStage(2)} disabled={busy}>

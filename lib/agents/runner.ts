@@ -68,10 +68,23 @@ type StepOutcome =
  * Execute (or resume) a workflow to completion. Idempotent + resumable (D2). Never
  * throws — all failures are recorded on the workflow row.
  */
-export async function runWorkflow(workflowId: string): Promise<void> {
+export async function runWorkflow(workflowId: string, apiKey: string): Promise<void> {
   const db = createAdminClient();
 
+  // BYOK: resolve the per-run key. Prefer the caller-supplied key; fall back to the
+  // server env only for self-host/dev. The key is never logged or persisted.
+  const resolvedKey = apiKey || process.env.ANTHROPIC_API_KEY || "";
+
   try {
+    if (!resolvedKey) {
+      await markWorkflowError(
+        db,
+        workflowId,
+        "No Anthropic API key provided — add your key in Settings",
+      );
+      return;
+    }
+
     // 1. Load workflow + files; download from Storage; parse once (keyed by file_type).
     const workflow = await loadWorkflow(db, workflowId);
     if (!workflow) return; // nothing we can do — no row to mark
@@ -109,7 +122,15 @@ export async function runWorkflow(workflowId: string): Promise<void> {
 
       const outcomes = await Promise.all(
         pending.map((def) =>
-          executeStep(db, workflowId, def, files, groupPriors, stepRowByNumber.get(def.stepNumber)),
+          executeStep(
+            db,
+            workflowId,
+            def,
+            files,
+            groupPriors,
+            resolvedKey,
+            stepRowByNumber.get(def.stepNumber),
+          ),
         ),
       );
 
@@ -151,6 +172,7 @@ async function executeStep(
   def: StepDefinition,
   files: Record<string, ParsedFile>,
   priorOutputs: Record<number, unknown>,
+  apiKey: string,
   stepRow: WorkflowStep | undefined,
 ): Promise<StepOutcome> {
   const stepId = stepRow?.id ?? null;
@@ -159,7 +181,9 @@ async function executeStep(
   const actorId = model ?? "system";
 
   try {
-    const ctx: StepContext = { workflowId, db, files, priorOutputs };
+    // apiKey lives on ctx for llm steps to reach callClaude; it is never serialized into
+    // the input snapshot (built separately below) or any audit detail.
+    const ctx: StepContext = { workflowId, db, files, priorOutputs, apiKey };
 
     // Full input snapshot → hash; a row-truncated copy → stored for display (§5.2).
     const fullSnapshot = buildInputSnapshot(files, priorOutputs);

@@ -15,8 +15,6 @@ import Anthropic, { APIError, RateLimitError } from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 
-const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY
-
 export const AGENT_MODEL = "claude-sonnet-4-6";
 
 const MAX_TOKENS = 16000;
@@ -64,14 +62,20 @@ export async function callClaude<T>(opts: {
   system: string;
   user: string;
   schema: z.ZodType<T>;
+  apiKey: string;
 }): Promise<{ data: T; reasoning: string }> {
-  const { system, user, schema } = opts;
+  const { system, user, schema, apiKey } = opts;
+  if (!apiKey) throw new Error("No Anthropic API key provided");
+
+  // BYOK: the client is constructed per call from the caller-supplied key, which lives
+  // only for the duration of the request and is never persisted or logged.
+  const anthropic = new Anthropic({ apiKey });
   const format = zodOutputFormat(schema);
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: user }];
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const message = await createWithRetry({
+    const message = await createWithRetry(anthropic, {
       model: AGENT_MODEL,
       max_tokens: MAX_TOKENS,
       thinking: { type: "adaptive" },
@@ -147,6 +151,7 @@ function fallbackReasoning(data: unknown): string {
  *   - anything else: rethrow.
  */
 async function createWithRetry(
+  anthropic: Anthropic,
   params: Anthropic.MessageCreateParamsNonStreaming,
 ): Promise<Anthropic.Message> {
   try {
