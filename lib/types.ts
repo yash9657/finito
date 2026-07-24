@@ -303,6 +303,62 @@ export interface AuditLogRow {
   created_at: string; // D10 — named created_at, not timestamp
 }
 
+/* -------------------------------------------------------------------------- */
+/* Plan 2 — LLM provider config rows (§3). snake_case as stored.               */
+/* -------------------------------------------------------------------------- */
+
+export const PROVIDER_IDS = [
+  "anthropic",
+  "openai",
+  "google",
+  "ollama",
+  "custom",
+] as const;
+export type ProviderIdValue = (typeof PROVIDER_IDS)[number];
+export const providerIdEnum = z.enum(PROVIDER_IDS);
+
+/** Role each step declares (D-P8). Informational grouping; resolution is by step_key. */
+export const STEP_ROLES = ["parser", "matcher", "classifier", "writer"] as const;
+export type StepRole = (typeof STEP_ROLES)[number];
+
+/** org_model_configs row (§3). `api_key_ciphertext` is NEVER exposed to the browser (D-P3). */
+export interface OrgModelConfig {
+  id: string;
+  org_id: string;
+  provider: ProviderIdValue;
+  display_name: string;
+  api_key_ciphertext: string;
+  key_last4: string;
+  base_url: string | null;
+  default_model: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string;
+}
+
+/** The browser-safe projection of `OrgModelConfig` returned by GET /api/llm/configs. */
+export interface OrgModelConfigPublic {
+  id: string;
+  provider: ProviderIdValue;
+  display_name: string;
+  key_last4: string;
+  base_url: string | null;
+  default_model: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at: string;
+}
+
+/** workflow_step_configs row (§3) — pins one (org, workflow_type, step_key) to a config. */
+export interface WorkflowStepConfig {
+  id: string;
+  org_id: string;
+  workflow_type: WorkflowType;
+  step_key: string;
+  assigned_provider_config_id: string;
+  created_at: string;
+}
+
 /** review_decisions row (§4). */
 export interface ReviewDecision {
   id: string;

@@ -27,6 +27,43 @@ export type WorkflowAccess =
   | { ok: false; response: NextResponse };
 
 /**
+ * Result of the org-level access guard (Plan 2 §5). Success yields the admin client
+ * and the caller's profile (so routes can enforce `profile.role === 'admin'` for
+ * mutating operations). GETs allow any org member; writes are admin-only.
+ */
+export type OrgAccess =
+  | { ok: true; admin: SupabaseClient; profile: Profile }
+  | { ok: false; response: NextResponse };
+
+/**
+ * Auth + profile gate for `/api/llm/*` routes. Resolves the signed-in user and their
+ * profile (which carries `org_id` + `role`). No workflow scope. Callers scope all
+ * queries by `profile.org_id` and gate mutations on `profile.role === 'admin'`.
+ */
+export async function requireOrgAccess(): Promise<OrgAccess> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+  if (userError || !user) {
+    return { ok: false, response: jsonError("Not authenticated", 401) };
+  }
+
+  const admin = createAdminClient();
+  const { data: profile, error: profileError } = await admin
+    .from("profiles")
+    .select("*")
+    .eq("id", user.id)
+    .maybeSingle<Profile>();
+  if (profileError || !profile) {
+    return { ok: false, response: jsonError("Profile not found", 401) };
+  }
+
+  return { ok: true, admin, profile };
+}
+
+/**
  * Auth + org-scope gate for `/api/workflows/[id]/*` routes (§10, D5).
  *
  * 1. Resolve the signed-in user via the cookie-scoped server client. None → 401.
