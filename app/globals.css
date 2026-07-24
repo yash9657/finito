@@ -33,3 +33,46 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
 }
+
+/*
+ * Print styles for the report page (PLAN §11.6). Re-map the theme tokens to a
+ * light palette so every token-based utility (bg-background, text-foreground,
+ * bg-card, border-border) flips to white background / black text automatically;
+ * hide the app chrome and anything marked `.no-print`.
+ */
+@media print {
+  :root {
+    --background: #ffffff;
+    --card: #ffffff;
+    --border: #cccccc;
+    --foreground: #000000;
+    --muted: #444444;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  aside,
+  .no-print {
+    display: none !important;
+  }
+
+  main {
+    overflow: visible !important;
+  }
+
+  .report-print {
+    max-width: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Keep flag / status accents printing in color. */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

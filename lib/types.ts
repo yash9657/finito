@@ -309,6 +309,53 @@ export interface ReviewDecision {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Frontend aggregate types — the exact shapes returned by                     */
+/* GET /api/workflows/[id]/status/route.ts. The route projects a SUBSET of the */
+/* DB rows above, so these are declared explicitly (not the full DB rows).     */
+/* -------------------------------------------------------------------------- */
+
+/** The `workflow` object in the /status body (projected subset of `Workflow`). */
+export interface WorkflowRow {
+  id: string;
+  name: string;
+  type: WorkflowType;
+  status: WorkflowStatus;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/** One `steps[]` entry in the /status body (projected subset of `WorkflowStep`). */
+export interface StepRow {
+  id: string;
+  step_number: number;
+  track: Track;
+  name: string;
+  status: StepStatus;
+  agent_reasoning: string | null;
+  input_snapshot: unknown | null;
+  output: unknown | null;
+  sources: StepSource[] | null;
+  model: string | null;
+  input_hash: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+/** The `review` object in the /status body (a full `review_decisions` row, or null). */
+export type ReviewRow = ReviewDecision;
+
+/** The full JSON body of GET /api/workflows/[id]/status. */
+export interface StatusResponse {
+  workflow: WorkflowRow;
+  steps: StepRow[];
+  review: ReviewRow | null;
+}
+
+/** A `workflow_files` row as consumed by the frontend (alias of `WorkflowFile`). */
+export type WorkflowFileRow = WorkflowFile;
+
+/* -------------------------------------------------------------------------- */
 /* Claude structured-output schemas — §7 Reconciliation.                       */
 /* Every schema carries a top-level `reasoning: z.string()` (§5.3).           */
 /* -------------------------------------------------------------------------- */
