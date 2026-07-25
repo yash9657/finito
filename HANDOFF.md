@@ -4,6 +4,13 @@
 > Read this top-to-bottom first. It captures (a) where the project stands, (b) a competitive
 > analysis vs. Andrew Ng's OpenWorker harness, and (c) a ranked, concretely-scoped build plan
 > for the features that turn "trustworthy finance output" into a real moat.
+>
+> **UPDATE (session 2):** Edges **#1, #3 and #4 are BUILT** — see `PLAN-3.md` (locked decisions
+> D-A1–D-A16, milestones A0–A6, all committed and green: typecheck + build + 150 vitest tests).
+> §3 below is preserved as the original analysis; read §1.1 for what changed and what is left.
+> **Remaining, in order: Edge #2 (typed learned rules — the durable moat), then Edge #5
+> (provider polish).** One operational prerequisite before anything runs live:
+> **apply `supabase/migrations/003_approvals.sql`** to the Supabase project (see §1.1).
 
 ---
 
@@ -67,6 +74,84 @@ Tests: Vitest (79 passing). Dark theme only.
 - Audit: `lib/audit.ts` (`writeAudit`, `sha256Json`) → `audit_log` table (workflow-scoped,
   `workflow_id NOT NULL`). Audit certificate UI: `components/workflow/AuditTrail.tsx`;
   Excel: `lib/excel/writer.ts`.
+
+---
+
+## 1.1 What session 2 built (Plan 3 — Edges #1 + #3 + #4)
+
+`PLAN-3.md` is the plan; it was followed milestone by milestone with one commit each. The
+shape of it:
+
+- **`lib/approvals/`** is the new layer. `risk.ts` — the finance risk taxonomy as a **data
+  table** (`read | writes_ledger | moves_money | external_filing`). `engine.ts` — pure
+  `evaluateAction()` in a fixed order **ceilings → rules → human**, plus
+  `validateRuleInput()`. `service.ts` — persistence: idempotent proposal by
+  `(workflow_id, action_key)`, resolve-exactly-once via a conditional UPDATE,
+  `reevaluatePending`, commit bookkeeping. `action-types.ts` — the action-type registry.
+  `report.ts` — the authorization-chain presentation helpers shared by the certificate and
+  the workbook.
+- **Orchestrator gate.** A step declaring a non-`read` risk proposes its consequential
+  actions deterministically (`proposeActions(ctx)`), they are evaluated + persisted, and the
+  step either **suspends** (`awaiting_approval` on both step and workflow, nothing
+  committed, `error_message` null — suspension is a third outcome, not failure) or runs with
+  `ctx.approvals` and commits only what is authorized. Resume is the same idempotent
+  `runWorkflow`; `awaiting_approval` steps reset to `pending` on entry.
+- **AP is wired.** `approval_queue` is `risk: 'moves_money'` and proposes one
+  `approve_invoice_payment` per payable invoice. `splitApprovalQueue()` is shared by the
+  proposal and the commit so they cannot diverge. **Every prompt string is byte-identical.**
+- **Routes/UI.** `POST /api/workflows/[id]/approvals` (decide + optional tiered grant +
+  auto-resume), `GET|PUT /api/approvals/policy`, `GET|POST /api/approvals/rules`,
+  `DELETE /api/approvals/rules/[id]`; `/status` gained `actions`.
+  `components/workflow/ApprovalPanel.tsx` + `/settings/approvals` (ceilings, allowlist,
+  four-eyes, standing rules).
+- **Audit (Edge #4).** `action_proposed → approval_requested → action_auto_approved /
+  approval_resolved / action_denied_by_ceiling → action_committed | action_withheld`, plus
+  `workflow_suspended`/`workflow_resumed`/`standing_rule_minted`. Rendered as the
+  "Authorization chain" in `AuditTrail.tsx` and an **Authorization** sheet in the workbook,
+  with the certificate footer counting authorized-by-rule vs by-reviewer vs denied.
+- **Tests.** 150 total. Notably `lib/agents/ap-gate.e2e.test.ts` walks the whole story
+  against the **real** AP graph + orchestrator + engine and the committed demo CSVs (only
+  Supabase and the LLM transport are faked): fresh org suspends → approve one + mint a
+  bounded standing rule → covered payments auto-clear → approve the rest → run completes
+  with only authorized payments committed; and a hard ceiling denies un-overridably while
+  the run still finishes.
+
+### ⚠️ Not yet verified live (the PLAN-3 §8 human checkpoint)
+
+1. **`supabase/migrations/003_approvals.sql` has NOT been applied** to project
+   `lveaycbnqnphgbszrogn` (this session had no DB password; DDL cannot go through the REST
+   API). Apply it via the Supabase SQL editor or `psql` **before** running the app, or every
+   approval query will fail on missing tables. It also widens the `workflows` /
+   `workflow_steps` status check constraints.
+2. Then run the AP demo end-to-end in the browser and confirm: the run suspends with the
+   Authorization panel populated; approving one payment with "Approve and create a rule…"
+   auto-clears the rest on resume; a low `hard_deny_above_cents` denies an oversized payment
+   with no approve control; the downloaded workbook's Authorization sheet tells that story.
+3. The security debt from session 1 (rotate the DB password + secret API key that were
+   pasted into a chat) is **still outstanding**.
+
+### Behaviour change to expect
+
+On a fresh org (no policy row, no rules) an **AP run now stops for authorization on every
+payable invoice** — that is the intended fail-closed default, and it shifts PLAN.md §13's AP
+expectations (the run reaches `awaiting_review` only after its payments are authorized). The
+sanctioned way to make it flow is minting a bounded standing rule; there is deliberately no
+"skip approvals" flag.
+
+### Seams left for Edge #2 (read before starting it)
+
+- **Vendor-name matching is exact-after-normalization only** (case + collapsed whitespace) in
+  `engine.ts`'s `normalizeCounterparty`. "Acme Inc" vs "ACME, Inc." correctly falls through to
+  a human. Edge #2's typed `vendor_alias` rows are the right place to fix that — do **not**
+  bolt a fuzzy matcher into the permission engine, where a loose match silently widens an
+  authorization.
+- **Learn-path vs apply-path is already separated** (D-A7): resolving an action never creates
+  a rule as a side effect; minting is explicit, attributed, and revocable. `approval_rules` is
+  a working precedent for what Edge #2's typed store should feel like (scoped, typed,
+  provenance-carrying, deterministically applied in code rather than prompt-injected).
+- `lib/approvals/action-types.ts` is where a new consequential action type registers; adding
+  `writes_ledger`/`external_filing` behaviour is a registry row + a `proposeActions` body, not
+  a redesign.
 
 ---
 
@@ -183,10 +268,10 @@ AES key encryption.
 ---
 
 ## 4. Suggested build order
-1. **Edge #1 + #3 together** (risk taxonomy + per-action approval gate + durable suspend/resume) —
-   biggest trust/compliance differentiator.
-2. **Edge #4** (full authorization-chain audit) — small delta on #1, high compliance value.
-3. **Edge #2** (typed org-scoped learned-rules layer) — the durable moat; larger build.
+1. ~~**Edge #1 + #3 together**~~ — **DONE** (session 2, `PLAN-3.md` A0–A6; see §1.1).
+2. ~~**Edge #4** (full authorization-chain audit)~~ — **DONE** (folded into Plan 3, A6).
+3. **Edge #2** (typed org-scoped learned-rules layer) — **next**; the durable moat, larger
+   build. Read §1.1's "Seams left for Edge #2" first.
 4. **Edge #5** (provider polish: param-fix retries, capability degradation, salvage, pre-save verify).
 
 Each should follow the existing plan discipline: land behind typecheck + build + tests, one focused
@@ -206,11 +291,15 @@ core, which a horizontal agent wrapper cannot replicate.
 ---
 
 ## 6. First moves for the new session
-1. `cd /Users/yashbhalgat/code/finito`, read `PLAN.md` (D1–D10) and `PLAN-2.md` (D-P1–D-P15) —
-   the locked-decision style you should keep.
-2. Skim `lib/agents/orchestrator.ts`, `components/workflow/ReviewBanner.tsx`, `lib/audit.ts` —
-   the three files Edge #1/#3/#4 touch most.
-3. Optionally open `/Users/yashbhalgat/code/openworker/coworker/{risk,permissions,engine,audit}.py`
-   for the reference patterns (read-only; different language/product).
-4. Propose a mini locked-decision plan for Edge #1 + #3 (a "PLAN-3") before coding, then implement
+1. `cd /Users/yashbhalgat/code/finito`, read `PLAN.md` (D1–D10), `PLAN-2.md` (D-P1–D-P15) and
+   `PLAN-3.md` (D-A1–D-A16) — the locked-decision style you should keep.
+2. **Operational first:** apply `supabase/migrations/003_approvals.sql`, then run the PLAN-3 §8
+   live checkpoint (§1.1 above). Nothing approval-related works against the live DB until then.
+3. For Edge #2, skim `lib/approvals/{engine,service}.ts` (the precedent for a typed, scoped,
+   deterministically-applied store) and `lib/agents/matching.ts` (where learned matching rules
+   and vendor aliases must be applied in code, not prompt-injected).
+4. Optionally open `/Users/yashbhalgat/code/openworker/coworker/memory/{base,sqlite_store,tools}.py`
+   and `skills/base.py` for the memory/progressive-disclosure patterns (read-only; different
+   language/product).
+5. Propose a locked-decision plan for Edge #2 (a "PLAN-4") before coding, then implement
    milestone by milestone with the typecheck+build+test gate.
