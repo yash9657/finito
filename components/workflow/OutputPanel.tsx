@@ -649,11 +649,12 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
               <TableHead>Vendor</TableHead>
               <TableHead className="text-right">Amount</TableHead>
               <TableHead>Action</TableHead>
+              <TableHead>Authorized</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {queue.autoApprove.length === 0 ? (
-              <EmptyRow span={5} label="None" />
+              <EmptyRow span={6} label="None" />
             ) : (
               queue.autoApprove.map((item) => (
                 <TableRow key={item.invoiceId}>
@@ -665,6 +666,14 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
                   </TableCell>
                   <TableCell>
                     <Badge variant="accent">approve</Badge>
+                  </TableCell>
+                  {/* How the payment was authorized (Plan 3, D-A3). */}
+                  <TableCell className="text-xs text-muted">
+                    {item.authorization?.source === "standing_rule"
+                      ? "standing rule"
+                      : item.authorization?.source === "human"
+                        ? "reviewer"
+                        : "—"}
                   </TableCell>
                 </TableRow>
               ))
@@ -704,12 +713,24 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
-                      {item.flags.length === 0 ? (
-                        <span className="text-xs text-muted">—</span>
-                      ) : (
+                      {item.flags.length > 0 ? (
                         item.flags.map((f: ApFlag, i) => (
                           <ApFlagChip key={i} category={f.category} />
                         ))
+                      ) : item.authorization ? (
+                        // Held by an authorization decision, not a data flag (D-A5).
+                        <Badge
+                          variant="error"
+                          title={item.authorization.reason ?? undefined}
+                        >
+                          {item.authorization.status === "denied"
+                            ? "denied by policy"
+                            : item.authorization.status === "rejected"
+                              ? "rejected"
+                              : "not authorized"}
+                        </Badge>
+                      ) : (
+                        <span className="text-xs text-muted">—</span>
                       )}
                     </div>
                   </TableCell>

@@ -54,16 +54,22 @@ orchestrator) and must never be sent to the client.
 
 ## 3. Apply the database schema
 
-The schema lives in
-[`supabase/migrations/001_init.sql`](./supabase/migrations/001_init.sql) (tables,
-RLS policies, the `profiles` auto-provision trigger, the seeded "Demo Org", and the
-private `workflow-files` Storage bucket) followed by
-[`supabase/migrations/002_llm_providers.sql`](./supabase/migrations/002_llm_providers.sql)
-(the `org_model_configs` / `workflow_step_configs` tables and the provenance columns
-on `workflow_steps`). Apply them **in order**, either way:
+The schema lives in three migrations, applied **in order**:
+
+1. [`001_init.sql`](./supabase/migrations/001_init.sql) — tables, RLS policies, the
+   `profiles` auto-provision trigger, the seeded "Demo Org", and the private
+   `workflow-files` Storage bucket.
+2. [`002_llm_providers.sql`](./supabase/migrations/002_llm_providers.sql) — the
+   `org_model_configs` / `workflow_step_configs` tables and the provenance columns on
+   `workflow_steps`.
+3. [`003_approvals.sql`](./supabase/migrations/003_approvals.sql) — the authorization
+   layer: `org_approval_policies`, `approval_rules`, `action_requests`, and the
+   `awaiting_approval` status values.
+
+Either way:
 
 - **Supabase SQL editor** — open your project → SQL Editor → paste the contents of
-  `001_init.sql` → Run, then do the same for `002_llm_providers.sql`.
+  each file in order → Run.
 - **Supabase CLI** — with the CLI linked to your project:
 
   ```bash
@@ -98,12 +104,83 @@ then **configure an LLM provider first** under **Settings → Models → Add pro
 default (D-P4).
 
 Then: **Dashboard → New workflow → pick a type → upload files → Run**. The live
-view polls every 2s while the agents work; approve at the review gate to unlock the
-report + audit certificate (Print / Save as PDF from there, or download the XLSX).
+view polls every 2s while the agents work. An AP run stops at the **Authorization**
+panel to have each payable invoice decided (see "Per-action authorization" below) and
+resumes itself once they are; then approve at the review gate to unlock the report +
+audit certificate (Print / Save as PDF from there, or download the XLSX).
 
 > If no provider resolves for the org, the wizard's **Launch** and the error
 > banner's **Re-run** surface the run route's inline "No LLM provider configured"
 > notice, linking to **Settings → Models**.
+
+## Per-action authorization (Plan 3)
+
+Analysis is free; **consequential acts are not**. FinFlow does not approve a run once at
+the end and call that control — anything that would move money, write a ledger, or file
+externally is a first-class **action**, decided *before* it happens.
+
+**How an action comes to exist.** A step declares a risk class from the taxonomy in
+[`lib/approvals/risk.ts`](./lib/approvals/risk.ts) — `read` (the default),
+`writes_ledger`, `moves_money`, `external_filing` — and, if it is not `read`, a
+`proposeActions(ctx)` that computes the acts it wants to commit in **plain TypeScript**
+from parsed rows and prior step outputs. The model never invents an action, an amount, or
+a counterparty (D3/D-A1). Today's one non-`read` step is AP's **approval queue**:
+authorizing a supplier invoice for payment. `validateDag` rejects a step whose risk and
+`proposeActions` disagree, so a gate cannot be mislabelled into silence.
+
+**How each action is decided — ceilings, then rules, then a human.**
+[`lib/approvals/engine.ts`](./lib/approvals/engine.ts) is pure and deterministic:
+
+1. **Structural ceilings (absolute).** Above `hard_deny_above_cents`, or to a name outside
+   the `approved_counterparties` allowlist when the org requires one, the action is
+   **denied** — the decide route refuses to resolve a denied row and no UI offers to.
+   No in-band click can override an org's ceiling.
+2. **Target-bound grants.** A rule matches only if the action type, target kind, and
+   *every* constraint it declares hold: exact counterparty (case/whitespace normalized —
+   nothing fuzzier), an inclusive amount cap, or an exact target id. `once` / `run` grants
+   are locked to the run they were minted in; `standing` grants must carry a counterparty
+   and/or a cap, so "approve this action type for anything" cannot be expressed. Even a
+   matching rule cannot fire above `auto_approve_max_cents`.
+3. **Otherwise a person decides.** With no policy row and no rules — a fresh org — that is
+   *every* consequential action. Fail closed by default.
+
+**Suspend and resume.** When any action still needs a human, the run **suspends**: the step
+and workflow go `awaiting_approval`, nothing is committed, and the pending item lives in
+`action_requests`. No connection is held open and no timer runs, so waiting a week costs
+nothing. Decisions resolve exactly once (a conditional `UPDATE … WHERE status = 'pending'`,
+so a second reviewer or a retried request is told who decided, never silently overwritten),
+and clearing the last one flips the run back to `running` and re-enters the same idempotent
+`runWorkflow`. Re-entry re-proposes the same `action_key`s, finds their decisions, and
+proceeds — a resume never duplicates a pending item or re-asks a resolved one.
+
+A denial or rejection **resolves** an action rather than failing the run: the step commits
+everything else and records why the rest was withheld (the invoice moves to hold-for-review
+carrying its authorization note).
+
+**Segregation of duties.** Approving requires the `admin` or `reviewer` role; minting or
+revoking rules and editing ceilings are `admin`-only. Turn on `require_separate_approver`
+and whoever launched a run cannot authorize its actions.
+
+**The audit artifact.** Every stage is written to `audit_log`: `action_proposed` →
+`approval_requested` → `action_auto_approved` / `approval_resolved` /
+`action_denied_by_ceiling` → `action_committed` or `action_withheld`, plus
+`workflow_suspended` / `workflow_resumed` and `standing_rule_minted`. The report page's
+audit certificate and the Excel workbook's **Authorization** sheet render the same chain
+per action — type, target, counterparty, amount, risk class, outcome, the rule that
+authorized it or the person who did, and the proposed/decided/committed timestamps — with
+the footer stating how many of the run's consequential actions were authorized, by rule vs
+by a reviewer, and how many the policy denied. Revocation is soft precisely so a past
+auto-approval keeps pointing at the rule that authorized it.
+
+**Where to configure it:** **Settings → Approvals** (ceilings, counterparty allowlist,
+four-eyes toggle, standing rules) and, in a suspended run, the **Authorization** panel on
+the workflow page — where approving can mint a rule pre-bound to that action's counterparty
+and amount. That is the intended path from "approve every payment by hand" to "auto-approve
+this vendor under $X, always ask for new payees".
+
+> **Note for the AP demo:** with a fresh org (no policy, no rules) an AP run *will* stop and
+> ask you to authorize each payable invoice — that is the feature. Approve one and tick
+> "Approve and create a rule…" to watch the rest clear automatically on resume.
 
 ## Multi-provider LLM architecture (Plan 2)
 
@@ -156,7 +233,7 @@ reverse proxy inside the customer network exposed via the `custom` provider's
 | `npm run dev`       | Dev server (Turbopack)                    |
 | `npm run build`     | Production build                          |
 | `npm run typecheck` | `tsc --noEmit`                            |
-| `npm run test`      | Unit tests (Vitest — parser, matcher, crypto, provider layer, router, DAG, orchestrator) |
+| `npm run test`      | Unit tests (Vitest — parser, matcher, crypto, provider layer, router, DAG, orchestrator, permission engine, approval service, authorization reporting) |
 | `npm run demo-data` | Regenerate `demo-data/` fixtures          |
 | `npm run lint`      | ESLint                                     |
 
@@ -176,6 +253,12 @@ reverse proxy inside the customer network exposed via the `custom` provider's
   in-flight siblings still persist. Re-POSTing `/run` on an `error` workflow resets
   errored steps to `pending` and resumes; `complete` steps never re-run. A step stuck
   `running` > 3 min is treated as crashed.
+- **D-A3 / D-A10 — Authorization is a gate inside the orchestrator, and suspension is not
+  failure.** A step whose risk class requires authorization proposes its actions, they are
+  evaluated + persisted, and the step either suspends (`awaiting_approval`, nothing
+  committed, `error_message` null) or runs with `ctx.approvals` and commits only what is
+  authorized. Resume is the same idempotent `runWorkflow`; `action_key` makes re-entry
+  duplicate-free. See "Per-action authorization" above and `PLAN-3.md` for D-A1–D-A16.
 - **D3 — Hybrid matching.** Exact-rule matching (equal amounts, date windows,
   duplicates, variance arithmetic) runs in deterministic TypeScript; Claude is used
   only for judgment (fuzzy adjudication, classification) and language (explanations,
@@ -204,15 +287,21 @@ app/
   (app)/workflows/[id]/report   final report + audit certificate  (server, print)
   (app)/settings                org + members
   (app)/settings/models         LLM providers, per-step matrix, usage  (Plan 2)
-  api/workflows/**              create / upload / run / status / review / report (xlsx)
+  (app)/settings/approvals      ceilings, counterparty allowlist, standing rules  (Plan 3)
+  api/workflows/**              create / upload / run / status / review / approvals / report
   api/llm/**                    provider configs / test / step-configs / usage  (Plan 2)
+  api/approvals/**              org policy / standing rules (mint + revoke)  (Plan 3)
 components/workflow/            StepCard, WorkflowTrack, LiveWorkflowView, OutputPanel,
-                                ReviewBanner, FileDropzone, AuditTrail, PrintButton
+                                ApprovalPanel, ReviewBanner, FileDropzone, AuditTrail,
+                                PrintButton
 components/settings/            ModelsManager, ProviderConfigList, AddProviderDialog,
-                                StepModelMatrix, UsagePanel
+                                StepModelMatrix, UsagePanel, ApprovalsManager,
+                                ApprovalPolicyEditor, StandingRulesList
 lib/agents/                     dag + orchestrator + reconciliation / AP / FP&A + matching
 lib/llm/                        provider.ts, router.ts, providers/*, crypto, json-schema,
                                 redact, url-guard, config-service  (Plan 2)
+lib/approvals/                  risk taxonomy, permission engine, service, action-types,
+                                report helpers  (Plan 3)
 lib/supabase/                   server + admin + middleware clients
 lib/{types,format,audit,csv,excel}
 ```
