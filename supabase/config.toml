@@ -1,0 +1,13 @@
+# Supabase CLI project config.
+#
+# Deliberately MINIMAL. The CLI fills in defaults for every section it does not find
+# here, and both the CLI and the Supabase GitHub integration treat this file's presence
+# as "this directory is a Supabase project" — which is what makes
+# `supabase/migrations/*.sql` deployable. Declaring extra sections (auth providers, db
+# settings, …) risks a config sync overwriting the hosted project's real settings with
+# scaffold defaults, so keep this file empty of anything we do not actively manage here.
+#
+# `project_id` is a LOCAL identifier (used to name local dev containers), not the hosted
+# project ref. The hosted project is bound by `supabase link --project-ref <ref>`, which
+# writes to supabase/.temp/ (gitignored).
+project_id = "finito"

@@ -1,0 +1,83 @@
+name: Apply Supabase migrations
+
+# Applies supabase/migrations/*.sql to the hosted project on every merge to main.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_ACCESS_TOKEN  — a personal access token (Supabase dashboard → Account → Access Tokens)
+#   SUPABASE_DB_PASSWORD   — the project's Postgres password (Dashboard → Database → reset if unknown)
+# Optional repository variable:
+#   SUPABASE_PROJECT_REF   — overrides the default below. The ref is NOT a secret; it is
+#                            already public in NEXT_PUBLIC_SUPABASE_URL.
+#
+# FIRST RUN: 001_init.sql and 002_llm_providers.sql were applied by hand with `psql`, so the
+# remote `supabase_migrations.schema_migrations` table has no record of them and a plain
+# `db push` would retry 001 and fail on "relation already exists". Run this workflow once
+# manually (Actions → Apply Supabase migrations → Run workflow) with
+# "repair_legacy_history" checked to record those two versions as applied WITHOUT re-running
+# their SQL. It is deliberately opt-in: marking migrations applied on a project where they
+# genuinely were not would leave that database silently incomplete.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/migrations/**"
+      - "supabase/config.toml"
+      - ".github/workflows/supabase-migrations.yml"
+  workflow_dispatch:
+    inputs:
+      repair_legacy_history:
+        description: "One-time: record 001/002 (applied by hand via psql) as applied before pushing"
+        type: boolean
+        default: false
+
+# Never let two runs push migrations concurrently; queue instead of cancelling, so a
+# superseded run still finishes applying what it started.
+concurrency:
+  group: supabase-migrations
+  cancel-in-progress: false
+
+jobs:
+  push-migrations:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF || 'lveaycbnqnphgbszrogn' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Fail early with a clear message if the secrets are missing
+        run: |
+          missing=""
+          [ -n "$SUPABASE_ACCESS_TOKEN" ] || missing="$missing SUPABASE_ACCESS_TOKEN"
+          [ -n "$SUPABASE_DB_PASSWORD" ] || missing="$missing SUPABASE_DB_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):$missing — add them under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      # The CLI links through the connection pooler by default, which matters here: the
+      # direct database host is IPv6-only on new projects and GitHub runners are IPv4-only.
+      - name: Link the project
+        run: supabase link --project-ref "$PROJECT_REF"
+
+      - name: Migration history before
+        run: supabase migration list --linked
+
+      - name: One-time repair of pre-CLI migration history
+        if: ${{ inputs.repair_legacy_history }}
+        run: supabase migration repair --status applied 001 002 --linked
+
+      - name: Show what will be applied
+        run: supabase db push --linked --dry-run
+
+      - name: Apply migrations
+        run: supabase db push --linked --yes
+
+      - name: Migration history after
+        run: supabase migration list --linked
