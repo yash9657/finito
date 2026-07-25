@@ -244,6 +244,16 @@ export function evaluateAction(input: EvaluateActionInput): ActionEvaluation {
   };
 }
 
+/** The lifecycle state of a grant, for the settings list and API responses. */
+export type RuleState = "live" | "expired" | "consumed" | "revoked";
+
+export function ruleState(rule: ApprovalRule, nowIso: string): RuleState {
+  if (rule.revoked_at !== null) return "revoked";
+  if (rule.consumed_at !== null) return "consumed";
+  if (rule.expires_at !== null && rule.expires_at <= nowIso) return "expired";
+  return "live";
+}
+
 /** Compact human description of a grant's binding, for reasons and the UI. */
 export function ruleSummary(rule: ApprovalRule): string {
   const parts: string[] = [];
