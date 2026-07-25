@@ -66,15 +66,21 @@ The schema lives in three migrations, applied **in order**:
    layer: `org_approval_policies`, `approval_rules`, `action_requests`, and the
    `awaiting_approval` status values.
 
-Either way:
+Any of these:
 
+- **CI (default).** [`.github/workflows/supabase-migrations.yml`](./.github/workflows/supabase-migrations.yml)
+  runs `supabase db push` on every merge to `main` that touches `supabase/`. It needs two
+  repository secrets — `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` (project ref
+  defaults in the workflow and is overridable with the `SUPABASE_PROJECT_REF` variable).
+  **One-time:** because `001`/`002` were originally applied by hand with `psql`, the remote
+  migration-history table has no record of them, so run the workflow manually once with
+  **repair_legacy_history** checked — it records those versions as applied without
+  re-running their SQL, after which pushes apply only what is genuinely new.
+- **Supabase CLI locally** — `supabase link --project-ref <ref>` then `supabase db push`
+  (same one-time caveat: `supabase migration repair --status applied 001 002 --linked`
+  first).
 - **Supabase SQL editor** — open your project → SQL Editor → paste the contents of
   each file in order → Run.
-- **Supabase CLI** — with the CLI linked to your project:
-
-  ```bash
-  supabase db push
-  ```
 
 ## 4. Generate demo data (optional)
 
