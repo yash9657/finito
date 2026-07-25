@@ -912,12 +912,23 @@ export interface AutoApproveItem {
   amountCents: number;
   vendor: string;
   recommendedAction: "approve";
+  /**
+   * How this payment came to be authorized (Plan 3, D-A3): the standing rule that
+   * covered it or the human who approved it. Present for every item produced by the
+   * gated approval-queue step; optional so legacy rows still type-check.
+   */
+  authorization?: ActionDecision;
 }
 
 export interface HoldForReviewItem {
   invoice: Invoice;
   poId: string | null;
   flags: ApFlag[];
+  /**
+   * Set when the invoice is held for an AUTHORIZATION reason rather than a data flag —
+   * a human rejected the payment, or an org ceiling denied it (Plan 3, D-A5).
+   */
+  authorization?: ActionDecision;
 }
 
 /** §8 step 5 output — the AP approval queue. */

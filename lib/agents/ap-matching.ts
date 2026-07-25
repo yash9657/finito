@@ -7,6 +7,9 @@
  * deterministic approval-queue split with an LLM narrative. Step 6 (human review) is
  * a gate represented by the workflow status — it has no step row (§8).
  *
+ * Plan 3: the approval-queue step is the workflow's one money-moving act, so it is
+ * `risk: 'moves_money'` and authorization-gated (D-A2/D-A3) — see the step's header.
+ *
  * Hybrid discipline (D3/D7): every match, flag category, tolerance test and amount is
  * computed in code from the parsed rows; Claude only adjudicates ambiguous candidate
  * pairs and writes human-readable language. Every ID Claude returns is validated
@@ -25,6 +28,7 @@ import type {
   LlmFn,
   LlmInvokeResult,
   MatchConfidence,
+  ProposedAction,
   PurchaseOrder,
   StepContext,
   StepResult,
@@ -35,6 +39,7 @@ import {
   apMatchAdjudicationSchema,
   apQueueNarrativeSchema,
 } from "@/lib/types";
+import { APPROVE_INVOICE_PAYMENT } from "@/lib/approvals/action-types";
 import { matchAp, withinTolerance } from "@/lib/agents/matching";
 import type { ApMatchPass } from "@/lib/agents/matching";
 import type { z } from "zod";
@@ -52,7 +57,7 @@ interface ApMatchedPair {
   matchReason: string;
 }
 
-interface ApMatchStepOutput {
+export interface ApMatchStepOutput {
   matchedPairs: ApMatchedPair[];
   unmatchedInvoices: Invoice[];
   unmatchedPos: PurchaseOrder[];
@@ -73,7 +78,7 @@ interface ApFlagEntry {
   recommendation: string;
 }
 
-interface ApFlagStepOutput {
+export interface ApFlagStepOutput {
   flags: ApFlagEntry[];
 }
 
@@ -503,10 +508,107 @@ const flagInvoices: DagStepDefinition = {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Step 5 (main) — Approval queue (deterministic split + LLM narrative).        */
+/* Step 5 (main) — Approval queue: the one money-moving step (Plan 3, D-A2).    */
+/*                                                                             */
+/* Deciding an invoice is payable IS the consequential act, so this step is     */
+/* `risk: 'moves_money'` and gated: it proposes one `approve_invoice_payment`   */
+/* action per payable invoice BEFORE it runs, and commits only what             */
+/* `ctx.approvals` authorizes (D-A3/D-A5). Both halves derive their candidate    */
+/* set from the same `splitApprovalQueue` helper, so the gate and the commit     */
+/* can never disagree about which payments exist (D-A13).                       */
 /* -------------------------------------------------------------------------- */
 
 const AP_QUEUE_SYSTEM = `You are an accounts-payable manager summarising an approval queue for a finance reviewer. Given the counts and amounts for auto-approvable invoices (matched to a PO within tolerance, no flags) and the invoices held for review with their flags, write a concise 3-4 sentence narrative: state how many invoices and what total value can be auto-approved, summarise why the held invoices need attention, and highlight the highest-risk category. Professional and factual, no filler.`;
+
+/** An invoice that passed every data check: matched to a PO, no flags → payable. */
+export interface PayableInvoice {
+  invoice: Invoice;
+  poId: string;
+}
+
+export interface ApQueueSplit {
+  /** Candidates for payment — each becomes one proposed action (D-A1). */
+  payable: PayableInvoice[];
+  /** Held for a DATA reason (unmatched or flagged); authorization is not involved. */
+  held: HoldForReviewItem[];
+  flagCategoryTally: Record<string, number>;
+}
+
+/**
+ * The deterministic queue split (D-A13). Pure: same inputs → same output, no clock, no
+ * model, so `proposeActions` and `run` always see the identical candidate set.
+ */
+export function splitApprovalQueue(
+  invoices: Invoice[],
+  match: ApMatchStepOutput,
+  flagStep: ApFlagStepOutput,
+): ApQueueSplit {
+  const poByInvoice = new Map(match.matchedPairs.map((m) => [m.invoiceId, m.poId]));
+  const flagsByInvoice = new Map<string, ApFlag[]>();
+  for (const f of flagStep.flags) {
+    const arr = flagsByInvoice.get(f.invoiceId) ?? [];
+    arr.push({
+      category: f.category,
+      explanation: f.explanation,
+      recommendation: f.recommendation,
+    });
+    flagsByInvoice.set(f.invoiceId, arr);
+  }
+
+  const payable: PayableInvoice[] = [];
+  const held: HoldForReviewItem[] = [];
+  for (const inv of invoices) {
+    const poId = poByInvoice.get(inv.id) ?? null;
+    const flags = flagsByInvoice.get(inv.id) ?? [];
+    if (poId !== null && flags.length === 0) {
+      payable.push({ invoice: inv, poId });
+    } else {
+      held.push({ invoice: inv, poId, flags });
+    }
+  }
+
+  const flagCategoryTally: Record<string, number> = {};
+  for (const f of flagStep.flags) {
+    flagCategoryTally[f.category] = (flagCategoryTally[f.category] ?? 0) + 1;
+  }
+
+  return { payable, held, flagCategoryTally };
+}
+
+/** The action key for one payable invoice — deterministic + stable across resumes (D-A1). */
+export function paymentActionKey(invoiceId: string): string {
+  return `${APPROVE_INVOICE_PAYMENT}:${invoiceId}`;
+}
+
+/** One payable invoice → one proposed money-moving action, bound to its target (D-A3). */
+function paymentAction(p: PayableInvoice): ProposedAction {
+  const inv = p.invoice;
+  return {
+    actionKey: paymentActionKey(inv.id),
+    actionType: APPROVE_INVOICE_PAYMENT,
+    riskClass: "moves_money",
+    target: {
+      kind: "invoice",
+      id: inv.id,
+      counterparty: inv.vendorName,
+      amountCents: inv.amountCents,
+    },
+    summary: `Approve payment of $${dollars(inv.amountCents)} to ${inv.vendorName} for invoice ${inv.invoiceNumber} (matched to ${p.poId})`,
+    payload: {
+      poId: p.poId,
+      invoiceNumber: inv.invoiceNumber,
+      lineItem: inv.lineItem,
+      dueDate: inv.dueDate,
+    },
+  };
+}
+
+function queueInputs(ctx: StepContext): ApQueueSplit {
+  const invoices = invoicesFrom(ctx);
+  const match = ctx.priorOutputs["match_invoices"] as ApMatchStepOutput;
+  const flagStep = ctx.priorOutputs["flag_invoices"] as ApFlagStepOutput;
+  return splitApprovalQueue(invoices, match, flagStep);
+}
 
 const approvalQueue: DagStepDefinition = {
   key: "approval_queue",
@@ -516,68 +618,77 @@ const approvalQueue: DagStepDefinition = {
   track: "main",
   name: "Approval queue",
   kind: "llm",
+  risk: "moves_money",
+  async proposeActions(ctx: StepContext): Promise<ProposedAction[]> {
+    return queueInputs(ctx).payable.map(paymentAction);
+  },
   async run(ctx: StepContext): Promise<StepResult> {
-    const invoices = invoicesFrom(ctx);
-    const match = ctx.priorOutputs["match_invoices"] as ApMatchStepOutput;
-    const flagStep = ctx.priorOutputs["flag_invoices"] as ApFlagStepOutput;
-
-    const poByInvoice = new Map(match.matchedPairs.map((m) => [m.invoiceId, m.poId]));
-    const flagsByInvoice = new Map<string, ApFlag[]>();
-    for (const f of flagStep.flags) {
-      const arr = flagsByInvoice.get(f.invoiceId) ?? [];
-      arr.push({
-        category: f.category,
-        explanation: f.explanation,
-        recommendation: f.recommendation,
-      });
-      flagsByInvoice.set(f.invoiceId, arr);
-    }
+    const { payable, held, flagCategoryTally } = queueInputs(ctx);
 
     const autoApprove: AutoApproveItem[] = [];
-    const holdForReview: HoldForReviewItem[] = [];
+    const holdForReview: HoldForReviewItem[] = [...held];
+    /** Payments the gate did NOT authorize — surfaced to the reviewer and the narrative. */
+    const withheld: HoldForReviewItem[] = [];
 
-    for (const inv of invoices) {
-      const poId = poByInvoice.get(inv.id) ?? null;
-      const flags = flagsByInvoice.get(inv.id) ?? [];
-      if (poId !== null && flags.length === 0) {
+    for (const p of payable) {
+      // Fail closed (D-A3): a missing decision is not an authorization.
+      const decision = ctx.approvals.get(paymentActionKey(p.invoice.id));
+      if (decision?.authorized) {
         autoApprove.push({
-          invoiceId: inv.id,
-          poId,
-          amountCents: inv.amountCents,
-          vendor: inv.vendorName,
+          invoiceId: p.invoice.id,
+          poId: p.poId,
+          amountCents: p.invoice.amountCents,
+          vendor: p.invoice.vendorName,
           recommendedAction: "approve",
+          authorization: decision,
         });
       } else {
-        holdForReview.push({ invoice: inv, poId, flags });
+        withheld.push({
+          invoice: p.invoice,
+          poId: p.poId,
+          flags: [],
+          authorization: decision,
+        });
       }
     }
+    holdForReview.push(...withheld);
 
     const autoApproveAmountCents = autoApprove.reduce((s, a) => s + a.amountCents, 0);
     const holdAmountCents = holdForReview.reduce((s, h) => s + h.invoice.amountCents, 0);
 
-    const flagCategoryTally: Record<string, number> = {};
-    for (const f of flagStep.flags) {
-      flagCategoryTally[f.category] = (flagCategoryTally[f.category] ?? 0) + 1;
+    // The prompt is unchanged (D-A14); the payload gains `authorizationHolds` only when
+    // an authorization decision actually withheld a payment.
+    const userPayload: Record<string, unknown> = {
+      autoApprove: {
+        count: autoApprove.length,
+        totalAmount: dollars(autoApproveAmountCents),
+      },
+      holdForReview: {
+        count: holdForReview.length,
+        totalAmount: dollars(holdAmountCents),
+        byFlagCategory: flagCategoryTally,
+        items: holdForReview.map((h) => ({
+          vendor: h.invoice.vendorName,
+          amount: dollars(h.invoice.amountCents),
+          flags: h.flags.map((f) => f.category),
+        })),
+      },
+    };
+    if (withheld.length > 0) {
+      userPayload.authorizationHolds = {
+        count: withheld.length,
+        totalAmount: dollars(withheld.reduce((s, w) => s + w.invoice.amountCents, 0)),
+        items: withheld.map((w) => ({
+          vendor: w.invoice.vendorName,
+          amount: dollars(w.invoice.amountCents),
+          reason: w.authorization?.reason ?? "not authorized",
+        })),
+      };
     }
 
     const { data: narr, reasoning, meta } = await ctx.llm({
       system: AP_QUEUE_SYSTEM,
-      user: JSON.stringify({
-        autoApprove: {
-          count: autoApprove.length,
-          totalAmount: dollars(autoApproveAmountCents),
-        },
-        holdForReview: {
-          count: holdForReview.length,
-          totalAmount: dollars(holdAmountCents),
-          byFlagCategory: flagCategoryTally,
-          items: holdForReview.map((h) => ({
-            vendor: h.invoice.vendorName,
-            amount: dollars(h.invoice.amountCents),
-            flags: h.flags.map((f) => f.category),
-          })),
-        },
-      }),
+      user: JSON.stringify(userPayload),
       schema: apQueueNarrativeSchema,
     });
 
@@ -593,13 +704,15 @@ const approvalQueue: DagStepDefinition = {
       },
     };
 
+    const authNote =
+      withheld.length > 0 ? `, ${withheld.length} withheld pending authorization` : "";
     return {
       output,
       reasoning,
       sources: [
         {
           file: "approval queue",
-          note: `${autoApprove.length} auto-approve, ${holdForReview.length} held for review`,
+          note: `${autoApprove.length} authorized for payment, ${held.length} held on data flags${authNote}`,
         },
       ],
       llmMeta: meta,
