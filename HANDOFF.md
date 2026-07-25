@@ -119,10 +119,22 @@ shape of it:
 ### ⚠️ Not yet verified live (the PLAN-3 §8 human checkpoint)
 
 1. **`supabase/migrations/003_approvals.sql` has NOT been applied** to project
-   `lveaycbnqnphgbszrogn` (this session had no DB password; DDL cannot go through the REST
-   API). Apply it via the Supabase SQL editor or `psql` **before** running the app, or every
-   approval query will fail on missing tables. It also widens the `workflows` /
-   `workflow_steps` status check constraints.
+   `lveaycbnqnphgbszrogn` — verified over the REST API: `organizations` and
+   `org_model_configs` answer 200, while `action_requests` / `approval_rules` /
+   `org_approval_policies` 404. Until it is applied every approval query fails on missing
+   tables. It also widens the `workflows` / `workflow_steps` status check constraints.
+
+   Migrations now deploy from CI —
+   [`.github/workflows/supabase-migrations.yml`](./.github/workflows/supabase-migrations.yml)
+   runs `supabase db push` on merges to `main` touching `supabase/` (this needed
+   `supabase/config.toml`, whose absence was why the repo-linked project deployed nothing).
+   **Two one-time setup steps remain, both needing credentials no agent session has:**
+   add the `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` repository secrets, then run
+   the workflow manually once with **repair_legacy_history** checked — `001`/`002` were
+   applied by hand with `psql`, so the remote migration-history table has no record of them
+   and a plain push would retry `001` and fail on "relation already exists". Tidy moment to
+   fold in the credential rotation below: reset the DB password in the dashboard and put the
+   new one straight into the secret.
 2. Then run the AP demo end-to-end in the browser and confirm: the run suspends with the
    Authorization panel populated; approving one payment with "Approve and create a rule…"
    auto-clears the rest on resume; a low `hard_deny_above_cents` denies an oversized payment
@@ -293,8 +305,9 @@ core, which a horizontal agent wrapper cannot replicate.
 ## 6. First moves for the new session
 1. `cd /Users/yashbhalgat/code/finito`, read `PLAN.md` (D1–D10), `PLAN-2.md` (D-P1–D-P15) and
    `PLAN-3.md` (D-A1–D-A16) — the locked-decision style you should keep.
-2. **Operational first:** apply `supabase/migrations/003_approvals.sql`, then run the PLAN-3 §8
-   live checkpoint (§1.1 above). Nothing approval-related works against the live DB until then.
+2. **Operational first:** get `003_approvals.sql` applied (two setup steps in §1.1 — repo
+   secrets, then one manual workflow run with `repair_legacy_history`), then run the PLAN-3 §8
+   live checkpoint. Nothing approval-related works against the live DB until then.
 3. For Edge #2, skim `lib/approvals/{engine,service}.ts` (the precedent for a typed, scoped,
    deterministically-applied store) and `lib/agents/matching.ts` (where learned matching rules
    and vendor aliases must be applied in code, not prompt-injected).
