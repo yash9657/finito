@@ -4,6 +4,7 @@ import { requireWorkflowAccess, jsonError } from "@/lib/api/guard";
 import { writeAudit } from "@/lib/audit";
 import { runWorkflow } from "@/lib/agents/orchestrator";
 import { resolveProvider, NoProviderConfiguredError } from "@/lib/llm/router";
+import { pendingActions } from "@/lib/approvals/service";
 import { workflowDefinitions } from "@/lib/agents/dag";
 import type { FileType, WorkflowType } from "@/lib/types";
 
@@ -35,12 +36,27 @@ export async function POST(
   if (!g.ok) return g.response;
   const { admin, profile, workflow } = g;
 
-  // Re-running after a crash/failure = resume (D2). Only idle or error may launch.
-  if (workflow.status !== "idle" && workflow.status !== "error") {
+  // Re-running after a crash/failure = resume (D2); `awaiting_approval` is the third
+  // resumable state (Plan 3, D-A10) — but only once every pending action is decided.
+  if (
+    workflow.status !== "idle" &&
+    workflow.status !== "error" &&
+    workflow.status !== "awaiting_approval"
+  ) {
     return jsonError(
-      `Workflow is '${workflow.status}'; only 'idle' or 'error' workflows can be run.`,
+      `Workflow is '${workflow.status}'; only 'idle', 'error' or 'awaiting_approval' workflows can be run.`,
       409,
     );
+  }
+
+  if (workflow.status === "awaiting_approval") {
+    const pending = await pendingActions(admin, id);
+    if (pending.length > 0) {
+      return jsonError(
+        `${pending.length} action(s) still await approval — resolve them before resuming.`,
+        409,
+      );
+    }
   }
 
   // All required files must be present for this workflow type.
@@ -80,11 +96,13 @@ export async function POST(
   }
 
   // Mark running + record launch time. Clear any prior error_message from a failed run.
+  // A resume keeps the original `started_at` so the audit certificate reports when the
+  // run actually launched, not when it was last resumed.
   const { error: updateError } = await admin
     .from("workflows")
     .update({
       status: "running",
-      started_at: new Date().toISOString(),
+      started_at: workflow.started_at ?? new Date().toISOString(),
       error_message: null,
     })
     .eq("id", id);
@@ -97,8 +115,9 @@ export async function POST(
     workflowId: id,
     actorType: "human",
     actorId: profile.id,
-    action: "workflow_launched",
-    detail: { type: workflow.type },
+    // A relaunch from `error`/`awaiting_approval` is a resume, not a launch (D-A10).
+    action: workflow.status === "idle" ? "workflow_launched" : "workflow_resumed",
+    detail: { type: workflow.type, from_status: workflow.status },
   });
 
   // Primary path: run in the background via waitUntil (works under `next dev`, D2/§15).

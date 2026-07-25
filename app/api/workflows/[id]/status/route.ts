@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { requireWorkflowAccess } from "@/lib/api/guard";
 import { writeAudit } from "@/lib/audit";
+import { listActions } from "@/lib/approvals/service";
 import type { ReviewDecision, WorkflowStep } from "@/lib/types";
 
 // A step stuck in `running` beyond this is treated as crashed (D2).
@@ -94,6 +95,10 @@ export async function GET(
     workflow = { ...workflow, status: "error", error_message: STALE_MESSAGE };
   }
 
+  // Consequential actions proposed by this run (Plan 3, D-A12) — the approval panel's
+  // data source, so a suspended run needs no extra endpoint.
+  const actions = await listActions(admin, id);
+
   // Latest review decision (null if none yet).
   const { data: reviewData, error: reviewError } = await admin
     .from("review_decisions")
@@ -142,5 +147,6 @@ export async function GET(
       completed_at: s.completed_at,
     })),
     review: reviewData ?? null,
+    actions,
   });
 }

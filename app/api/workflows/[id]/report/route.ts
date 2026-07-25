@@ -10,6 +10,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { requireWorkflowAccess, jsonError } from "@/lib/api/guard";
 import { buildWorkbookBuffer } from "@/lib/excel/writer";
+import { listActions } from "@/lib/approvals/service";
 import type {
   WorkflowStep,
   WorkflowFile,
@@ -83,13 +84,24 @@ export async function GET(
     reviewerProfile = data ?? null;
   }
 
-  const buffer = buildWorkbookBuffer(
-    workflow,
-    steps,
-    files,
-    decision,
-    reviewerProfile,
-  );
+  // The authorization chain (Plan 3, D-A15): every consequential action this run
+  // proposed, plus the emails of whoever approved them, so the workbook can name them.
+  const actions = await listActions(admin, workflow.id);
+  const approverIds = [...new Set(actions.map((a) => a.decided_by).filter((x): x is string => !!x))];
+  const approverEmails: Record<string, string> = {};
+  for (const approverId of approverIds) {
+    const { data } = await admin
+      .from("profiles")
+      .select("id, email")
+      .eq("id", approverId)
+      .maybeSingle<Pick<Profile, "id" | "email">>();
+    if (data) approverEmails[data.id] = data.email;
+  }
+
+  const buffer = buildWorkbookBuffer(workflow, steps, files, decision, reviewerProfile, {
+    actions,
+    approverEmails,
+  });
 
   const filename = `finflow-${workflow.type}-${workflow.id.slice(0, 8)}.xlsx`;
 

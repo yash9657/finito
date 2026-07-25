@@ -1,14 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatTime, shortHash } from "@/lib/format";
 import type { StepRow, StepStatus, Track } from "@/lib/types";
 
-/* Status glyph — pending hollow circle · running ping dot · complete check · error ✕. */
+/* Status glyph — pending hollow circle · running ping dot · awaiting_approval shield ·
+   complete check · error ✕. */
 function StatusGlyph({ status }: { status: StepStatus }) {
+  if (status === "awaiting_approval") {
+    return <ShieldAlert className="h-3.5 w-3.5 text-warning" />;
+  }
   if (status === "running") {
     return (
       <span className="relative flex h-3.5 w-3.5 items-center justify-center">
@@ -54,9 +58,10 @@ function StatusGlyph({ status }: { status: StepStatus }) {
   );
 }
 
-function trackVariant(track: Track): "muted" | "running" | "accent" {
-  if (track === "main") return "muted";
-  return track === "A" ? "running" : "accent";
+// Track is a layout hint, not a status — keep the chip neutral so parallel tracks
+// don't read as two clashing accent colors.
+function trackVariant(_track: Track): "muted" {
+  return "muted";
 }
 
 function Section({
@@ -108,7 +113,11 @@ export default function StepCard({ step }: { step: StepRow }) {
     <div
       className={cn(
         "rounded-lg border bg-card transition-colors",
-        step.status === "running" ? "border-running/50" : "border-border",
+        step.status === "running"
+          ? "border-running/50"
+          : step.status === "awaiting_approval"
+            ? "border-warning/50"
+            : "border-border",
       )}
     >
       {/* Fade + slide-in keyed on status change. */}
@@ -117,7 +126,7 @@ export default function StepCard({ step }: { step: StepRow }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
+        className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
       >
         <ChevronRight
           className={cn(
@@ -137,9 +146,15 @@ export default function StepCard({ step }: { step: StepRow }) {
           </span>
           {step.name}
         </span>
-        <Badge variant={trackVariant(step.track)} className="shrink-0">
-          {step.track}
-        </Badge>
+        {step.status === "awaiting_approval" ? (
+          <Badge variant="warning" className="shrink-0">
+            gated
+          </Badge>
+        ) : (
+          <Badge variant={trackVariant(step.track)} className="shrink-0">
+            {step.track}
+          </Badge>
+        )}
         {step.status === "complete" && step.completed_at && (
           <span className="shrink-0 font-mono text-[11px] text-muted">
             {formatTime(step.completed_at)}
@@ -148,7 +163,7 @@ export default function StepCard({ step }: { step: StepRow }) {
       </button>
 
       {open && (
-        <div className="ff-step-anim space-y-3 border-t border-border px-3 py-3 font-mono text-xs leading-relaxed">
+        <div className="ff-step-anim space-y-3 border-t border-border px-3 py-3 text-xs leading-relaxed">
           {hasReasoning && (
             <Section label="Reasoning">
               <p className="whitespace-pre-wrap text-foreground/90">
@@ -159,7 +174,7 @@ export default function StepCard({ step }: { step: StepRow }) {
 
           {hasInput && (
             <Section label="Input">
-              <pre className="max-h-48 overflow-auto rounded border border-border bg-background/60 p-2 text-[11px] text-foreground/80">
+              <pre className="max-h-48 overflow-auto rounded border border-border bg-background/60 p-2 font-mono text-[11px] text-foreground/80">
                 {pretty(step.input_snapshot)}
               </pre>
             </Section>
@@ -167,7 +182,7 @@ export default function StepCard({ step }: { step: StepRow }) {
 
           {hasOutput && (
             <Section label="Output">
-              <pre className="max-h-64 overflow-auto rounded border border-border bg-background/60 p-2 text-[11px] text-foreground/80">
+              <pre className="max-h-64 overflow-auto rounded border border-border bg-background/60 p-2 font-mono text-[11px] text-foreground/80">
                 {pretty(step.output)}
               </pre>
             </Section>
@@ -191,7 +206,7 @@ export default function StepCard({ step }: { step: StepRow }) {
           )}
 
           {hasProvenance && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2 text-[10px] text-muted">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2 font-mono text-[10px] text-muted">
               <span className="text-foreground/70">
                 {step.provider_used}:{step.model}
               </span>

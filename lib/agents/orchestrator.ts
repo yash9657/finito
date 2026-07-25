@@ -1,12 +1,20 @@
 /**
- * DAG orchestrator (Plan 2 §4.3, D-P5/D-P6) — replaces the linear runner.
+ * DAG orchestrator (Plan 2 §4.3, D-P5/D-P6; Plan 3 §4, D-A3/D-A10/D-A11).
  *
- * `runWorkflow(workflowId)` takes no key: the router owns provider resolution now
- * (D-P7). Algorithm: load step rows → reset `error` steps to `pending` (resume) →
- * repeatedly run the ready set (steps whose deps are all `complete`) concurrently via
- * Promise.all → on a step's final failure, mark it + the workflow `error`, stop
- * scheduling new waves, but let in-flight siblings finish and persist. Per step: up to 3
- * attempts with 1s/4s backoff (D-P6). All complete → `awaiting_review`.
+ * `runWorkflow(workflowId)` takes no key: the router owns provider resolution (D-P7).
+ * Algorithm: load step rows → reset `error` AND `awaiting_approval` steps to `pending`
+ * (resume, D-A10) → repeatedly run the ready set (steps whose deps are all `complete`)
+ * concurrently via Promise.all → on a step's final failure, mark it + the workflow
+ * `error`; on a step's suspension, mark it + the workflow `awaiting_approval`. Either way
+ * stop scheduling new waves but let in-flight siblings finish and persist. Per step: up
+ * to 3 attempts with 1s/4s backoff (D-P6). All complete → `awaiting_review`.
+ *
+ * The authorization gate (Plan 3, D-A3) sits between "step is running" and "step runs":
+ * a step whose risk class requires authorization proposes its consequential actions
+ * deterministically, they are evaluated + persisted, and the step either suspends (any
+ * action still pending a human) or runs with `ctx.approvals` populated. Suspension is not
+ * failure (D-A11): the workflow status says `awaiting_approval`, `error_message` stays
+ * null, and resume is the same idempotent entry point.
  *
  * Every DB write / Storage read is service-role (D5). Decrypted keys live only inside
  * resolveProvider→invoke→provider frames; nothing here logs or serializes a key (§9).
@@ -17,7 +25,10 @@ import { parseFile } from "@/lib/csv/parser";
 import { writeAudit, sha256Json } from "@/lib/audit";
 import { resolveProvider, invoke, NoProviderConfiguredError } from "@/lib/llm/router";
 import { workflowDefinitions } from "@/lib/agents/dag";
+import { requiresAuthorization } from "@/lib/approvals/risk";
+import { decisionMap, gateStepActions, markCommitted } from "@/lib/approvals/service";
 import type {
+  ActionRequest,
   DagStepDefinition,
   LlmInvokeMeta,
   ParsedFile,
@@ -55,9 +66,10 @@ export async function runWorkflow(workflowId: string): Promise<void> {
 
     const files = await loadAndParseFiles(db, workflowId);
 
-    // Ensure step rows exist (with step_key) + backfill legacy rows, then reset errors.
+    // Ensure step rows exist (with step_key) + backfill legacy rows, then reset the
+    // statuses a resume re-runs: `error` (D-P6) and `awaiting_approval` (D-A10).
     await ensureStepRows(db, workflowId, defs);
-    await resetErroredSteps(db, workflowId);
+    await resetResumableSteps(db, workflowId);
     let steps = await loadSteps(db, workflowId);
 
     // `done`: completed step outputs, keyed by step_key (D-P5).
@@ -70,6 +82,7 @@ export async function runWorkflow(workflowId: string): Promise<void> {
 
     // Ready-set scheduling (D-P6).
     const aborted = { value: false };
+    const suspended = { value: false };
     for (;;) {
       const rows = rowByNumber();
       const ready = defs.filter(
@@ -85,7 +98,7 @@ export async function runWorkflow(workflowId: string): Promise<void> {
 
       const outcomes = await Promise.all(
         ready.map((d) =>
-          executeStep(db, workflowId, workflow.org_id, def.type, d, files, wavePriors, aborted),
+          executeStep(db, workflowId, workflow.org_id, def.type, d, files, wavePriors, aborted, suspended),
         ),
       );
 
@@ -94,14 +107,16 @@ export async function runWorkflow(workflowId: string): Promise<void> {
       for (const o of outcomes) {
         if (o.ok) done.set(o.key, o.output);
       }
-      if (aborted.value) break; // a step failed: stop scheduling; siblings already finished
+      // A failure or a suspension stops scheduling; siblings in this wave already
+      // finished and persisted, so their work is never wasted (D-P6/D-A11).
+      if (aborted.value || suspended.value) break;
     }
 
     // All steps complete → human review gate.
     const allComplete = defs.every(
       (d) => rowByNumber().get(d.stepNumber)?.status === "complete",
     );
-    if (allComplete && !aborted.value) {
+    if (allComplete && !aborted.value && !suspended.value) {
       await db
         .from("workflows")
         .update({
@@ -127,7 +142,9 @@ export async function runWorkflow(workflowId: string): Promise<void> {
 /* Step execution                                                              */
 /* -------------------------------------------------------------------------- */
 
-type StepOutcome = { ok: true; key: string; output: unknown } | { ok: false };
+type StepOutcome =
+  | { ok: true; key: string; output: unknown }
+  | { ok: false; suspended?: boolean };
 
 async function executeStep(
   db: SupabaseAdmin,
@@ -138,32 +155,29 @@ async function executeStep(
   files: Record<string, ParsedFile>,
   priorOutputs: Record<string, unknown>,
   aborted: { value: boolean },
+  suspended: { value: boolean },
 ): Promise<StepOutcome> {
   const stepRow = (await loadSteps(db, workflowId)).find((s) => s.step_number === def.stepNumber);
   const stepId = stepRow?.id ?? null;
 
   try {
-    // Resolve the provider up front for LLM steps (D-P7). A missing provider is a
-    // clean step failure with no retries — the message points to Settings → Models.
+    // The ctx.llm closure: LLM steps call it; deterministic steps must not. `resolved` is
+    // filled in below (after the gate, so a suspended step never resolves a provider) and
+    // read at call time.
     let resolved: Awaited<ReturnType<typeof resolveProvider>> | null = null;
-    if (def.kind === "llm") {
-      try {
-        resolved = await resolveProvider(db, { orgId, workflowType, stepKey: def.key });
-      } catch (err) {
-        if (err instanceof NoProviderConfiguredError) {
-          await failStep(db, workflowId, def, stepId, "system", "system", err.message, aborted);
-          return { ok: false };
-        }
-        throw err;
-      }
-    }
-
-    // The ctx.llm closure: LLM steps call it; deterministic steps must not.
     const llm: StepContext["llm"] = async (opts) => {
       if (!resolved) throw new Error(`Deterministic step "${def.key}" must not call ctx.llm`);
       return invoke(resolved, opts);
     };
-    const ctx: StepContext = { workflowId, db, files, priorOutputs, llm };
+    // `approvals` is populated by the authorization gate (Plan 3, D-A3) before `run`.
+    const ctx: StepContext = {
+      workflowId,
+      db,
+      files,
+      priorOutputs,
+      llm,
+      approvals: new Map(),
+    };
 
     // Full input snapshot → hash; a row-truncated copy → stored for display.
     const fullSnapshot = buildInputSnapshot(files, priorOutputs);
@@ -196,6 +210,43 @@ async function executeStep(
       action: "step_started",
       detail: { step_key: def.key, step_number: def.stepNumber, name: def.name, track: def.track },
     });
+
+    /* ---- The authorization gate (Plan 3, D-A3): propose → evaluate → gate ---- */
+    let gatedActions: ActionRequest[] = [];
+    if (requiresAuthorization(def.risk ?? "read")) {
+      // Deterministic proposal from files + prior outputs (D-A1); never the model.
+      const proposed = def.proposeActions ? await def.proposeActions(ctx) : [];
+      gatedActions = await gateStepActions(db, {
+        workflowId,
+        orgId,
+        stepKey: def.key,
+        stepId,
+        actions: proposed,
+      });
+
+      const stillPending = gatedActions.filter((a) => a.status === "pending");
+      if (stillPending.length > 0) {
+        await suspendStep(db, workflowId, def, stepId, stillPending, suspended);
+        return { ok: false, suspended: true };
+      }
+      // Every action is resolved (authorized, rejected, or denied) — the step may run and
+      // must commit only what `ctx.approvals` authorizes (D-A3/D-A5).
+      ctx.approvals = decisionMap(gatedActions);
+    }
+
+    // Resolve the provider for LLM steps (D-P7). A missing provider is a clean step
+    // failure with no retries — the message points to Settings → Models.
+    if (def.kind === "llm") {
+      try {
+        resolved = await resolveProvider(db, { orgId, workflowType, stepKey: def.key });
+      } catch (err) {
+        if (err instanceof NoProviderConfiguredError) {
+          await failStep(db, workflowId, def, stepId, "system", "system", err.message, aborted);
+          return { ok: false };
+        }
+        throw err;
+      }
+    }
 
     // Attempt loop: up to 3 attempts with 1s/4s backoff (D-P6).
     const t0 = Date.now();
@@ -251,11 +302,58 @@ async function executeStep(
       },
     });
 
+    // Close each action's authorization chain now that the step's output is durable:
+    // `action_committed` for what happened, `action_withheld` for what was left out
+    // (Plan 3, D-A15).
+    if (gatedActions.length > 0) {
+      await markCommitted(db, { workflowId, stepId, rows: gatedActions });
+    }
+
     return { ok: true, key: def.key, output: result.output };
   } catch (err) {
     await failStep(db, workflowId, def, stepId, "system", "system", errMessage(err), aborted);
     return { ok: false };
   }
+}
+
+/**
+ * Suspend a gated step and its workflow on `awaiting_approval` (Plan 3, D-A10/D-A11).
+ * NOT an error: `error_message` stays null and the pending items live in
+ * `action_requests`, so the run survives a restart and resumes from any surface once they
+ * are decided. Setting `suspended` stops the scheduler launching new waves.
+ */
+async function suspendStep(
+  db: SupabaseAdmin,
+  workflowId: string,
+  def: DagStepDefinition,
+  stepId: string | null,
+  pending: ActionRequest[],
+  suspended: { value: boolean },
+): Promise<void> {
+  suspended.value = true;
+  await updateStep(db, workflowId, def.stepNumber, {
+    status: "awaiting_approval",
+    error_message: null,
+    completed_at: null,
+  });
+  await db
+    .from("workflows")
+    .update({ status: "awaiting_approval", error_message: null })
+    .eq("id", workflowId);
+  await writeAudit(db, {
+    workflowId,
+    stepId,
+    actorType: "system",
+    actorId: "system",
+    action: "workflow_suspended",
+    detail: {
+      step_key: def.key,
+      name: def.name,
+      pending_actions: pending.length,
+      action_keys: pending.map((p) => p.action_key),
+      reason: "awaiting per-action authorization",
+    },
+  });
 }
 
 /**
@@ -373,14 +471,21 @@ async function ensureStepRows(
   }
 }
 
-/** Reset any `error` steps to `pending` so a resume re-runs them (D-P6). */
-async function resetErroredSteps(db: SupabaseAdmin, workflowId: string): Promise<void> {
-  const { error } = await db
-    .from("workflow_steps")
-    .update({ status: "pending", error_message: null })
-    .eq("workflow_id", workflowId)
-    .eq("status", "error");
-  if (error) throw new Error(`Failed to reset errored steps: ${error.message}`);
+/**
+ * Reset the statuses a resume re-runs: `error` (D-P6) and `awaiting_approval` (D-A10).
+ * A re-gated step finds its existing decisions by `action_key` (D-A1), so it either
+ * proceeds with them or suspends again — never duplicating a pending item. `complete`
+ * steps are untouched and never re-run (D2).
+ */
+async function resetResumableSteps(db: SupabaseAdmin, workflowId: string): Promise<void> {
+  for (const status of ["error", "awaiting_approval"] as const) {
+    const { error } = await db
+      .from("workflow_steps")
+      .update({ status: "pending", error_message: null })
+      .eq("workflow_id", workflowId)
+      .eq("status", status);
+    if (error) throw new Error(`Failed to reset ${status} steps: ${error.message}`);
+  }
 }
 
 async function loadSteps(db: SupabaseAdmin, workflowId: string): Promise<WorkflowStep[]> {

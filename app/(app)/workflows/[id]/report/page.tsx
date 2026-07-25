@@ -8,6 +8,7 @@ import PrintButton from "@/components/workflow/PrintButton";
 import { Badge } from "@/components/ui/badge";
 import { formatDateTime } from "@/lib/format";
 import type {
+  ActionRequest,
   Workflow,
   WorkflowStep,
   WorkflowFile,
@@ -76,6 +77,27 @@ export default async function ReportPage({
       .eq("id", decision.reviewer_id)
       .maybeSingle<Profile>();
     reviewer = profile ?? null;
+  }
+
+  // The run's authorization chain (Plan 3, D-A15). Read under RLS like everything else on
+  // this page; `approverEmails` lets the certificate name who authorized each action.
+  const { data: actionsData } = await supabase
+    .from("action_requests")
+    .select("*")
+    .eq("workflow_id", id)
+    .order("proposed_at", { ascending: true });
+  const actions = (actionsData ?? []) as ActionRequest[];
+
+  const approverEmails: Record<string, string> = {};
+  const approverIds = [...new Set(actions.map((a) => a.decided_by).filter((x): x is string => !!x))];
+  if (approverIds.length > 0) {
+    const { data: approvers } = await supabase
+      .from("profiles")
+      .select("id, email")
+      .in("id", approverIds);
+    for (const p of (approvers ?? []) as Pick<Profile, "id" | "email">[]) {
+      approverEmails[p.id] = p.email;
+    }
   }
 
   // Project the DB rows into the /status shapes OutputPanel consumes.
@@ -154,6 +176,8 @@ export default async function ReportPage({
         files={files}
         decision={decision ?? null}
         reviewer={reviewer}
+        actions={actions}
+        approverEmails={approverEmails}
       />
     </div>
   );

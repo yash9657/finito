@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DagStepDefinition, StepResult } from "@/lib/types";
+import type { DagStepDefinition, ProposedAction, StepContext, StepResult } from "@/lib/types";
 
 /* -------------------------------------------------------------------------- */
 /* Hoisted shared state: an in-memory Supabase-admin mock + a settable graph.   */
@@ -9,11 +9,22 @@ const h = vi.hoisted(() => {
   interface Row {
     [k: string]: unknown;
   }
-  const state: { workflows: Row[]; workflow_steps: Row[]; workflow_files: Row[]; audit_log: Row[] } = {
+  const state: {
+    workflows: Row[];
+    workflow_steps: Row[];
+    workflow_files: Row[];
+    audit_log: Row[];
+    action_requests: Row[];
+    approval_rules: Row[];
+    org_approval_policies: Row[];
+  } = {
     workflows: [],
     workflow_steps: [],
     workflow_files: [],
     audit_log: [],
+    action_requests: [],
+    approval_rules: [],
+    org_approval_policies: [],
   };
   const graph: { steps: unknown[] } = { steps: [] };
 
@@ -33,8 +44,11 @@ const h = vi.hoisted(() => {
           return { data: null, error: null };
         }
         if (op === "update") {
-          for (const row of arr) if (match(row)) Object.assign(row, payload as Row);
-          return { data: null, error: null };
+          // Return the affected rows, like PostgREST does for `.update().select()` —
+          // this is what makes the conditional resolve-exactly-once update testable.
+          const hit = arr.filter(match);
+          for (const row of hit) Object.assign(row, payload as Row);
+          return { data: hit, error: null };
         }
         if (op === "delete") {
           for (let i = arr.length - 1; i >= 0; i--) if (match(arr[i])) arr.splice(i, 1);
@@ -113,6 +127,39 @@ function step(
   return { key, stepNumber, dependsOn, role: "parser", track: "main", name: key, kind: "deterministic", run };
 }
 
+/** A consequential step (Plan 3, D-A2/D-A3) proposing one moves_money action. */
+function gatedStep(
+  key: string,
+  stepNumber: number,
+  dependsOn: string[],
+  run: DagStepDefinition["run"],
+  actions: ProposedAction[] = [payment("inv-001", 120_000, "Acme Supplies")],
+): DagStepDefinition {
+  return {
+    ...step(key, stepNumber, dependsOn, run),
+    risk: "moves_money",
+    proposeActions: async () => actions,
+  };
+}
+
+function payment(id: string, amountCents: number, counterparty: string): ProposedAction {
+  return {
+    actionKey: `approve_invoice_payment:${id}`,
+    actionType: "approve_invoice_payment",
+    riskClass: "moves_money",
+    target: { kind: "invoice", id, counterparty, amountCents },
+    summary: `Approve payment of ${amountCents} cents to ${counterparty}`,
+  };
+}
+
+function actionRows() {
+  return h.state.action_requests.filter((a) => a.workflow_id === "wf1");
+}
+
+function auditActions(): string[] {
+  return h.state.audit_log.map((a) => String(a.action));
+}
+
 const ok = (output: unknown): Promise<StepResult> =>
   Promise.resolve({ output, reasoning: "done", sources: [] });
 
@@ -138,6 +185,9 @@ beforeEach(() => {
   h.state.workflow_steps = [];
   h.state.workflow_files = [];
   h.state.audit_log = [];
+  h.state.action_requests = [];
+  h.state.approval_rules = [];
+  h.state.org_approval_policies = [];
   h.graph.steps = [];
 });
 
@@ -217,6 +267,161 @@ describe("runWorkflow (orchestrator)", () => {
     expect(attempts).toBe(3);
     expect(stepRows()[0].status).toBe("complete");
     expect(h.state.workflows[0].status).toBe("awaiting_review");
+  });
+
+  /* ---- Plan 3: the authorization gate (D-A3/D-A10/D-A11) ---- */
+
+  it("a consequential step suspends the workflow instead of running; siblings still persist", async () => {
+    let ran = false;
+    h.graph.steps = [
+      step("a", 1, [], () => ok({ v: "a" })), // sibling in the same wave
+      gatedStep("pay", 2, [], () => {
+        ran = true;
+        return ok({ v: "pay" });
+      }),
+      step("after", 3, ["pay"], () => ok({ v: "after" })),
+    ];
+    seedWorkflow();
+
+    await runWorkflow("wf1");
+
+    expect(ran).toBe(false); // gate ran BEFORE the step body
+    const byKey = Object.fromEntries(stepRows().map((s) => [s.step_key, s.status]));
+    expect(byKey.a).toBe("complete"); // sibling's work is not wasted
+    expect(byKey.pay).toBe("awaiting_approval");
+    expect(byKey.after).toBe("pending"); // downstream never scheduled
+    expect(h.state.workflows[0].status).toBe("awaiting_approval");
+    expect(h.state.workflows[0].error_message).toBeNull(); // suspension is not failure
+    expect(h.state.workflows[0].completed_at).toBeNull();
+
+    // The durable pending item + its audit chain.
+    expect(actionRows()).toHaveLength(1);
+    const action = actionRows()[0];
+    expect(action.status).toBe("pending");
+    expect(action.action_key).toBe("approve_invoice_payment:inv-001");
+    expect(action.amount_cents).toBe(120_000);
+    expect(action.counterparty).toBe("Acme Supplies");
+    expect(String(action.decision_reason)).toMatch(/no standing rule covers/i);
+    expect(auditActions()).toContain("action_proposed");
+    expect(auditActions()).toContain("approval_requested");
+    expect(auditActions()).toContain("workflow_suspended");
+  });
+
+  it("resume after approval runs the gated step with ctx.approvals and completes the run", async () => {
+    const seen: { authorized?: boolean; source?: string | null } = {};
+    const gated = gatedStep("pay", 1, [], (ctx: StepContext) => {
+      const d = ctx.approvals.get("approve_invoice_payment:inv-001");
+      seen.authorized = d?.authorized;
+      seen.source = d?.source ?? null;
+      return ok({ v: "pay" });
+    });
+    h.graph.steps = [gated];
+    seedWorkflow();
+
+    await runWorkflow("wf1"); // suspends
+    expect(h.state.workflows[0].status).toBe("awaiting_approval");
+
+    // A human resolves the pending item (what the decide route does).
+    const action = actionRows()[0];
+    Object.assign(action, {
+      status: "approved",
+      decision_source: "human",
+      decided_by: "user-1",
+      decided_at: new Date().toISOString(),
+    });
+    h.state.workflows[0].status = "running";
+
+    await runWorkflow("wf1"); // resume
+
+    expect(seen.authorized).toBe(true);
+    expect(seen.source).toBe("human");
+    expect(stepRows()[0].status).toBe("complete");
+    expect(h.state.workflows[0].status).toBe("awaiting_review");
+    // Idempotent: re-proposing the action found its decision, no duplicate row.
+    expect(actionRows()).toHaveLength(1);
+    expect(actionRows()[0].committed_at).not.toBeNull();
+    expect(auditActions()).toContain("action_committed");
+  });
+
+  it("an action covered by a standing rule never suspends the run", async () => {
+    h.graph.steps = [gatedStep("pay", 1, [], () => ok({ v: "pay" }))];
+    seedWorkflow();
+    h.state.approval_rules.push({
+      id: "rule-1",
+      org_id: "org1",
+      scope: "standing",
+      workflow_id: null,
+      action_type: "approve_invoice_payment",
+      target_kind: "invoice",
+      target_id: null,
+      counterparty: "Acme Supplies",
+      max_amount_cents: 500_000,
+      note: null,
+      created_by: "user-1",
+      created_at: "2026-07-01T00:00:00.000Z",
+      expires_at: null,
+      consumed_at: null,
+      revoked_at: null,
+      revoked_by: null,
+    });
+
+    await runWorkflow("wf1");
+
+    expect(actionRows()[0].status).toBe("auto_approved");
+    expect(actionRows()[0].standing_rule_id).toBe("rule-1");
+    expect(stepRows()[0].status).toBe("complete");
+    expect(h.state.workflows[0].status).toBe("awaiting_review");
+    expect(auditActions()).toContain("action_auto_approved");
+    expect(auditActions()).not.toContain("workflow_suspended");
+  });
+
+  it("a ceiling-denied action does not block the run and is never authorized", async () => {
+    let sawAuthorized: boolean | undefined;
+    h.graph.steps = [
+      gatedStep(
+        "pay",
+        1,
+        [],
+        (ctx: StepContext) => {
+          sawAuthorized = ctx.approvals.get("approve_invoice_payment:inv-big")?.authorized;
+          return ok({ v: "pay" });
+        },
+        [payment("inv-big", 5_000_000, "Acme Supplies")],
+      ),
+    ];
+    seedWorkflow();
+    h.state.org_approval_policies.push({
+      org_id: "org1",
+      hard_deny_above_cents: 1_000_000,
+      auto_approve_max_cents: null,
+      require_known_counterparty: false,
+      approved_counterparties: [],
+      require_separate_approver: false,
+      updated_by: null,
+      updated_at: null,
+    });
+
+    await runWorkflow("wf1");
+
+    expect(actionRows()[0].status).toBe("denied");
+    expect(actionRows()[0].decision_source).toBe("ceiling");
+    expect(sawAuthorized).toBe(false); // step must fail closed on it
+    expect(stepRows()[0].status).toBe("complete"); // denial resolves; the run continues
+    expect(h.state.workflows[0].status).toBe("awaiting_review");
+    expect(auditActions()).toContain("action_denied_by_ceiling");
+    expect(auditActions()).toContain("action_withheld");
+  });
+
+  it("re-entering the gate does not duplicate action rows", async () => {
+    h.graph.steps = [gatedStep("pay", 1, [], () => ok({ v: "pay" }))];
+    seedWorkflow();
+
+    await runWorkflow("wf1");
+    h.state.workflows[0].status = "running";
+    await runWorkflow("wf1"); // still pending → suspends again
+
+    expect(actionRows()).toHaveLength(1);
+    expect(h.state.workflows[0].status).toBe("awaiting_approval");
   });
 
   it("resume: only non-complete steps re-run; complete steps are not re-executed", async () => {

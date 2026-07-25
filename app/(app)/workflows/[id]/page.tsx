@@ -4,6 +4,7 @@ import { use } from "react";
 import { useWorkflowStatus } from "@/lib/hooks/useWorkflowStatus";
 import { LiveWorkflowView } from "@/components/workflow/LiveWorkflowView";
 import OutputPanel from "@/components/workflow/OutputPanel";
+import ApprovalPanel from "@/components/workflow/ApprovalPanel";
 import ReviewBanner from "@/components/workflow/ReviewBanner";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -24,6 +25,7 @@ const STATUS_VARIANT: Record<
 > = {
   idle: "muted",
   running: "running",
+  awaiting_approval: "warning",
   awaiting_review: "warning",
   approved: "accent",
   rejected: "error",
@@ -33,6 +35,7 @@ const STATUS_VARIANT: Record<
 const STATUS_LABEL: Record<WorkflowStatus, string> = {
   idle: "Idle",
   running: "Running",
+  awaiting_approval: "Awaiting approval",
   awaiting_review: "Awaiting review",
   approved: "Approved",
   rejected: "Rejected",
@@ -83,6 +86,7 @@ export default function WorkflowPage({
   }
 
   const { workflow, steps, review } = data;
+  const actions = data.actions ?? [];
 
   return (
     <div className="flex h-full flex-col">
@@ -101,15 +105,20 @@ export default function WorkflowPage({
         </Badge>
       </header>
 
+      {/* Each panel owns its own internal scroll (overflow-hidden here bounds the row
+          so an expanded StepCard scrolls inside the panel, not the whole page). */}
       <div className="grid min-h-0 flex-1 grid-cols-[420px_1fr]">
-        <div className="min-h-0 overflow-y-auto border-r border-border">
+        <div className="min-h-0 overflow-hidden border-r border-border">
           <LiveWorkflowView steps={steps} />
         </div>
-        <div className="min-h-0 overflow-y-auto">
+        <div className="min-h-0 overflow-hidden">
           <OutputPanel workflow={workflow} steps={steps} />
         </div>
       </div>
 
+      {/* Per-action authorization (Plan 3 §6) sits above the end-of-run review gate:
+          consequential actions are decided before they happen, the deliverable after. */}
+      <ApprovalPanel workflow={workflow} actions={actions} onDecided={refetch} />
       <ReviewBanner workflow={workflow} review={review} onDecided={refetch} />
     </div>
   );

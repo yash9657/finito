@@ -2,15 +2,17 @@
 
 /* Dark theme only (per PLAN §11.1) — no toggle. */
 :root {
-  --background: #0a0a0a;
-  --card: #111111;
-  --border: #1f1f1f;
-  --foreground: #ededed;
-  --muted: #666666;
+  --background: #0a0a0c;
+  --card: #131318;
+  --card-hover: #191920;
+  --border: #262630;
+  --foreground: #ededee;
+  --muted: #8b8b96;
   --accent: #3ecf8e;
-  --warning: #f59e0b;
-  --error: #ef4444;
-  --running: #3b82f6;
+  --accent-strong: #2fb87c;
+  --warning: #f5a524;
+  --error: #f26d6d;
+  --running: #6ea8fe;
 }
 
 @theme inline {
@@ -20,18 +22,54 @@
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
   --color-warning: var(--warning);
   --color-error: var(--error);
   --color-running: var(--running);
+  --color-card-hover: var(--card-hover);
 
   --font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tighter tracking on headings reads more polished than the browser default. */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.011em;
+}
+
+/* Thin, theme-matched scrollbars — the app's panels scroll internally. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2f2f39 transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #2f2f39;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3c3c48;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--foreground);
 }
 
 /*
