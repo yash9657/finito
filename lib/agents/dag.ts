@@ -15,13 +15,17 @@ import type {
   WorkflowType,
   StepRole,
 } from "@/lib/types";
+import { requiresAuthorization } from "@/lib/approvals/risk";
 import { reconciliationSteps } from "@/lib/agents/reconciliation";
 import { apMatchingSteps } from "@/lib/agents/ap-matching";
 import { fpaCommentarySteps } from "@/lib/agents/fpa-commentary";
 
 /**
- * Validate a workflow graph: unique keys, all `dependsOn` refer to known keys, and no
- * cycles. Throws with a descriptive message on any violation.
+ * Validate a workflow graph: unique keys, all `dependsOn` refer to known keys, no
+ * cycles, and (Plan 3, D-A2/D-A3) risk/proposeActions consistency — a consequential step
+ * that proposes nothing, or an action-proposing step labelled `read`, is a mislabelled
+ * gate and must fail at import time rather than silently bypass authorization.
+ * Throws with a descriptive message on any violation.
  */
 export function validateDag(def: WorkflowDefinition): void {
   const keys = new Set<string>();
@@ -30,6 +34,21 @@ export function validateDag(def: WorkflowDefinition): void {
       throw new Error(`[${def.type}] duplicate step key "${step.key}"`);
     }
     keys.add(step.key);
+  }
+
+  for (const step of def.steps) {
+    const risk = step.risk ?? "read";
+    const proposes = typeof step.proposeActions === "function";
+    if (requiresAuthorization(risk) && !proposes) {
+      throw new Error(
+        `[${def.type}] step "${step.key}" has risk "${risk}" but no proposeActions()`,
+      );
+    }
+    if (proposes && !requiresAuthorization(risk)) {
+      throw new Error(
+        `[${def.type}] step "${step.key}" declares proposeActions() but risk "${risk}"`,
+      );
+    }
   }
 
   for (const step of def.steps) {

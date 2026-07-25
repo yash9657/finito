@@ -79,6 +79,7 @@ function StatusBadge({ status }: { status: WorkflowStatus }) {
     "muted" | "warning" | "accent" | "error"
   > = {
     idle: "muted",
+    awaiting_approval: "warning", // Plan 3, D-A10 — suspended on authorization
     awaiting_review: "warning",
     approved: "accent",
     rejected: "error",

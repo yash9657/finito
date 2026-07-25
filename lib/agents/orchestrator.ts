@@ -163,7 +163,15 @@ async function executeStep(
       if (!resolved) throw new Error(`Deterministic step "${def.key}" must not call ctx.llm`);
       return invoke(resolved, opts);
     };
-    const ctx: StepContext = { workflowId, db, files, priorOutputs, llm };
+    // `approvals` is populated by the authorization gate (Plan 3, D-A3) before `run`.
+    const ctx: StepContext = {
+      workflowId,
+      db,
+      files,
+      priorOutputs,
+      llm,
+      approvals: new Map(),
+    };
 
     // Full input snapshot → hash; a row-truncated copy → stored for display.
     const fullSnapshot = buildInputSnapshot(files, priorOutputs);

@@ -24,6 +24,7 @@ const STATUS_VARIANT: Record<
 > = {
   idle: "muted",
   running: "running",
+  awaiting_approval: "warning",
   awaiting_review: "warning",
   approved: "accent",
   rejected: "error",
@@ -33,6 +34,7 @@ const STATUS_VARIANT: Record<
 const STATUS_LABEL: Record<WorkflowStatus, string> = {
   idle: "Idle",
   running: "Running",
+  awaiting_approval: "Awaiting approval",
   awaiting_review: "Awaiting review",
   approved: "Approved",
   rejected: "Rejected",

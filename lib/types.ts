@@ -31,6 +31,8 @@ export const workflowTypeEnum = z.enum(WORKFLOW_TYPES);
 export const WORKFLOW_STATUSES = [
   "idle",
   "running",
+  // Plan 3, D-A10: suspended waiting on per-action authorization (not an error).
+  "awaiting_approval",
   "awaiting_review",
   "approved",
   "rejected",
@@ -39,7 +41,13 @@ export const WORKFLOW_STATUSES = [
 export type WorkflowStatus = (typeof WORKFLOW_STATUSES)[number];
 export const workflowStatusEnum = z.enum(WORKFLOW_STATUSES);
 
-export const STEP_STATUSES = ["pending", "running", "complete", "error"] as const;
+export const STEP_STATUSES = [
+  "pending",
+  "running",
+  "awaiting_approval", // Plan 3, D-A10
+  "complete",
+  "error",
+] as const;
 export type StepStatus = (typeof STEP_STATUSES)[number];
 export const stepStatusEnum = z.enum(STEP_STATUSES);
 
@@ -69,6 +77,43 @@ export const actorTypeEnum = z.enum(ACTOR_TYPES);
 export const PROFILE_ROLES = ["admin", "analyst", "reviewer"] as const;
 export type ProfileRole = (typeof PROFILE_ROLES)[number];
 export const profileRoleEnum = z.enum(PROFILE_ROLES);
+
+/* --- Plan 3 — per-action authorization vocabularies (§2, D-A2/D-A4/D-A6). --- */
+
+/** The finance risk taxonomy. Specs live in `lib/approvals/risk.ts` (D-A2). */
+export const RISK_CLASSES = [
+  "read",
+  "writes_ledger",
+  "moves_money",
+  "external_filing",
+] as const;
+export type RiskClass = (typeof RISK_CLASSES)[number];
+export const riskClassEnum = z.enum(RISK_CLASSES);
+
+/**
+ * `action_requests.status`. `auto_approved`/`approved` are authorized; `rejected`
+ * (human) and `denied` (structural ceiling — not overridable, D-A4) are resolutions
+ * that let the run continue without the action (D-A5). Only `pending` suspends.
+ */
+export const ACTION_STATUSES = [
+  "pending",
+  "auto_approved",
+  "approved",
+  "rejected",
+  "denied",
+] as const;
+export type ActionStatus = (typeof ACTION_STATUSES)[number];
+export const actionStatusEnum = z.enum(ACTION_STATUSES);
+
+/** Who/what resolved an action. */
+export const DECISION_SOURCES = ["standing_rule", "human", "ceiling", "policy"] as const;
+export type DecisionSource = (typeof DECISION_SOURCES)[number];
+export const decisionSourceEnum = z.enum(DECISION_SOURCES);
+
+/** Grant tiers (D-A6). Every tier is target-bound; `standing` needs a constraint. */
+export const RULE_SCOPES = ["once", "run", "standing"] as const;
+export type RuleScope = (typeof RULE_SCOPES)[number];
+export const ruleScopeEnum = z.enum(RULE_SCOPES);
 
 /**
  * The human review-gate decision vocabulary (review_decisions.decision, §4).
@@ -237,6 +282,52 @@ export type LlmFn = <T>(opts: {
   schema: z.ZodType<T>;
 }) => Promise<LlmInvokeResult<T>>;
 
+/* -------------------------------------------------------------------------- */
+/* Plan 3 — the action contract (§4, D-A1/D-A3/D-A13).                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What an approval is bound to (D-A3) — never "the step", never "the action type".
+ * Every field comes from source data via deterministic code (D-A1/D3): `counterparty`
+ * is the vendor name as parsed, `amountCents` is integer cents (D7/D-A16).
+ */
+export interface ActionTarget {
+  kind: string; // 'invoice'
+  id: string; // 'inv-003' (a stable synthetic row id, D8)
+  counterparty: string | null;
+  amountCents: number | null;
+}
+
+/** One consequential act a step wants to perform, proposed BEFORE it runs (D-A1). */
+export interface ProposedAction {
+  /** Deterministic + unique per workflow (`<action_type>:<target.id>`) — the gate's
+   *  idempotency key across resumes (D-A1). */
+  actionKey: string;
+  actionType: string; // 'approve_invoice_payment'
+  riskClass: RiskClass;
+  target: ActionTarget;
+  /** One-line human-readable description shown in the approval UI + audit trail. */
+  summary: string;
+  /** Deterministic supporting facts (po id, invoice number, …). No secrets. */
+  payload?: Record<string, unknown>;
+}
+
+/** The decision a step sees for one of its proposed actions (via `ctx.approvals`). */
+export interface ActionDecision {
+  actionKey: string;
+  actionId: string;
+  status: ActionStatus;
+  source: DecisionSource | null;
+  reason: string | null;
+  standingRuleId: string | null;
+  decidedBy: string | null;
+  /** True only for `auto_approved` / `approved` — step code must fail closed on false. */
+  authorized: boolean;
+}
+
+/** actionKey → decision, for the actions of one step (D-A3). */
+export type ActionDecisionMap = Map<string, ActionDecision>;
+
 export interface StepContext {
   workflowId: string;
   db: SupabaseClient; // admin client
@@ -244,6 +335,12 @@ export interface StepContext {
   priorOutputs: Record<string, unknown>; // step_key -> validated output (D-P5)
   /** Resolve + call the org's provider for this step (D-P1). LLM steps only. */
   llm: LlmFn;
+  /**
+   * Authorization decisions for THIS step's proposed actions (Plan 3, D-A3). Empty for
+   * `read` steps. A missing or unauthorized key means "not authorized" — commit paths
+   * must fail closed.
+   */
+  approvals: ActionDecisionMap;
 }
 
 export interface StepResult {
@@ -258,7 +355,7 @@ export interface StepResult {
   llmMeta?: LlmInvokeMeta;
 }
 
-/** One node of a workflow graph (Plan 2 §4.1, D-P5/D-P8). */
+/** One node of a workflow graph (Plan 2 §4.1, D-P5/D-P8; Plan 3 §4, D-A2/D-A3). */
 export interface DagStepDefinition {
   key: string; // 'parse_erp' — unique within the workflow
   stepNumber: number; // stable UI order + DB unique constraint (D-P5)
@@ -267,6 +364,18 @@ export interface DagStepDefinition {
   track: Track; // UI layout hint only
   name: string; // display name (unchanged strings from PLAN.md)
   kind: StepKind;
+  /**
+   * Consequence class (Plan 3, D-A2). Omitted ⇒ `read`. Any non-read step is gated by
+   * the permission engine before it runs and MUST declare `proposeActions`
+   * (`validateDag` enforces both directions).
+   */
+  risk?: RiskClass;
+  /**
+   * The consequential acts this step wants to commit, computed deterministically from
+   * files + prior outputs (D-A1/D-A13). Must not call `ctx.llm`. The same helper that
+   * derives these must derive the set `run` commits, so gate and commit cannot diverge.
+   */
+  proposeActions?(ctx: StepContext): Promise<ProposedAction[]>;
   run(ctx: StepContext): Promise<StepResult>;
 }
 
@@ -408,6 +517,89 @@ export interface WorkflowStepConfig {
   created_at: string;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Plan 3 — authorization rows (§2). snake_case as stored.                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * org_approval_policies row (§2, D-A4/D-A8) with defaults applied. `loadPolicy` returns
+ * this shape even when the org has no row: all ceilings null + all flags false, which
+ * denies nothing and auto-approves nothing, so every consequential action sees a human.
+ */
+export interface ApprovalPolicy {
+  org_id: string;
+  /** Absolute ceiling: above this an action is denied and NO click can override (D-A4). */
+  hard_deny_above_cents: number | null;
+  /** Rule ceiling: a standing rule can never auto-approve above this. */
+  auto_approve_max_cents: number | null;
+  require_known_counterparty: boolean;
+  approved_counterparties: string[];
+  /** Four-eyes: the workflow's creator may not resolve its own actions (D-A8). */
+  require_separate_approver: boolean;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+/** approval_rules row (§2, D-A6) — a tiered, target-bound grant. */
+export interface ApprovalRule {
+  id: string;
+  org_id: string;
+  scope: RuleScope;
+  workflow_id: string | null; // required for 'once'/'run'; null for 'standing'
+  action_type: string;
+  target_kind: string;
+  target_id: string | null; // required for 'once'
+  counterparty: string | null; // null = any counterparty
+  max_amount_cents: number | null; // inclusive cap; null = uncapped
+  note: string | null;
+  created_by: string;
+  created_at: string;
+  expires_at: string | null;
+  consumed_at: string | null;
+  revoked_at: string | null;
+  revoked_by: string | null;
+}
+
+/** The body accepted when minting a rule (validated by `validateRuleInput`, D-A6). */
+export interface ApprovalRuleInput {
+  scope: RuleScope;
+  workflow_id?: string | null;
+  action_type: string;
+  target_kind: string;
+  target_id?: string | null;
+  counterparty?: string | null;
+  max_amount_cents?: number | null;
+  note?: string | null;
+  expires_at?: string | null;
+}
+
+/** action_requests row (§2, D-A1) — the durable pending item. */
+export interface ActionRequest {
+  id: string;
+  workflow_id: string;
+  step_id: string | null;
+  step_key: string;
+  action_key: string;
+  action_type: string;
+  risk_class: RiskClass;
+  target: ActionTarget;
+  target_kind: string;
+  target_id: string;
+  counterparty: string | null;
+  amount_cents: number | null;
+  summary: string;
+  payload: Record<string, unknown> | null;
+  status: ActionStatus;
+  decision_source: DecisionSource | null;
+  decision_reason: string | null;
+  standing_rule_id: string | null;
+  decided_by: string | null;
+  comment: string | null;
+  proposed_at: string;
+  decided_at: string | null;
+  committed_at: string | null;
+}
+
 /** review_decisions row (§4). */
 export interface ReviewDecision {
   id: string;
@@ -464,11 +656,19 @@ export interface StepRow {
 /** The `review` object in the /status body (a full `review_decisions` row, or null). */
 export type ReviewRow = ReviewDecision;
 
+/**
+ * One `actions[]` entry in the /status body (Plan 3, D-A12). The whole row is safe for
+ * the browser — unlike `llm_raw` (D-P11) nothing here is provider or secret material.
+ */
+export type ActionRequestRow = ActionRequest;
+
 /** The full JSON body of GET /api/workflows/[id]/status. */
 export interface StatusResponse {
   workflow: WorkflowRow;
   steps: StepRow[];
   review: ReviewRow | null;
+  /** Consequential actions proposed by this run, newest-proposal-last (Plan 3). */
+  actions: ActionRequestRow[];
 }
 
 /** A `workflow_files` row as consumed by the frontend (alias of `WorkflowFile`). */

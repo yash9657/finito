@@ -41,6 +41,27 @@ describe("validateDag", () => {
       validateDag(def([stub("a", 1, ["b"]), stub("b", 2, ["a"])])),
     ).toThrow(/cycle/i);
   });
+
+  /* Plan 3, D-A2/D-A3 — a mislabelled authorization gate must fail at import time. */
+
+  it("rejects a consequential step with no proposeActions", () => {
+    const s = { ...stub("pay", 1, []), risk: "moves_money" as const };
+    expect(() => validateDag(def([s]))).toThrow(/no proposeActions/i);
+  });
+
+  it("rejects an action-proposing step labelled read", () => {
+    const s = { ...stub("pay", 1, []), proposeActions: async () => [] };
+    expect(() => validateDag(def([s]))).toThrow(/proposeActions\(\) but risk "read"/i);
+  });
+
+  it("accepts a consequential step that proposes actions", () => {
+    const s = {
+      ...stub("pay", 1, []),
+      risk: "moves_money" as const,
+      proposeActions: async () => [],
+    };
+    expect(() => validateDag(def([s]))).not.toThrow();
+  });
 });
 
 describe("workflowDefinitions", () => {
