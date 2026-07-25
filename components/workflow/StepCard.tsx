@@ -1,14 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatTime, shortHash } from "@/lib/format";
 import type { StepRow, StepStatus, Track } from "@/lib/types";
 
-/* Status glyph — pending hollow circle · running ping dot · complete check · error ✕. */
+/* Status glyph — pending hollow circle · running ping dot · awaiting_approval shield ·
+   complete check · error ✕. */
 function StatusGlyph({ status }: { status: StepStatus }) {
+  if (status === "awaiting_approval") {
+    return <ShieldAlert className="h-3.5 w-3.5 text-warning" />;
+  }
   if (status === "running") {
     return (
       <span className="relative flex h-3.5 w-3.5 items-center justify-center">
@@ -109,7 +113,11 @@ export default function StepCard({ step }: { step: StepRow }) {
     <div
       className={cn(
         "rounded-lg border bg-card transition-colors",
-        step.status === "running" ? "border-running/50" : "border-border",
+        step.status === "running"
+          ? "border-running/50"
+          : step.status === "awaiting_approval"
+            ? "border-warning/50"
+            : "border-border",
       )}
     >
       {/* Fade + slide-in keyed on status change. */}
@@ -138,9 +146,15 @@ export default function StepCard({ step }: { step: StepRow }) {
           </span>
           {step.name}
         </span>
-        <Badge variant={trackVariant(step.track)} className="shrink-0">
-          {step.track}
-        </Badge>
+        {step.status === "awaiting_approval" ? (
+          <Badge variant="warning" className="shrink-0">
+            gated
+          </Badge>
+        ) : (
+          <Badge variant={trackVariant(step.track)} className="shrink-0">
+            {step.track}
+          </Badge>
+        )}
         {step.status === "complete" && step.completed_at && (
           <span className="shrink-0 font-mono text-[11px] text-muted">
             {formatTime(step.completed_at)}

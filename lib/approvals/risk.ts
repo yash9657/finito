@@ -9,7 +9,9 @@
  * edit plus a `proposeActions` body — never a new `if (stepKey === …)`.
  */
 
-import { RISK_CLASSES, type RiskClass } from "@/lib/types";
+// Type-only import: this module stays runtime-dependency-free so client components can
+// import the specs for risk chips without pulling zod into the browser bundle.
+import type { RiskClass } from "@/lib/types";
 
 export interface RiskClassSpec {
   id: RiskClass;
@@ -80,6 +82,6 @@ export function mostSevere(classes: RiskClass[]): RiskClass | null {
 }
 
 /** Ordered most-severe-last, for stable UI iteration. */
-export const RISK_CLASSES_BY_SEVERITY: RiskClass[] = [...RISK_CLASSES].sort(
-  (a, b) => RISK_CLASS_SPECS[a].severity - RISK_CLASS_SPECS[b].severity,
-);
+export const RISK_CLASSES_BY_SEVERITY: RiskClass[] = Object.values(RISK_CLASS_SPECS)
+  .sort((a, b) => a.severity - b.severity)
+  .map((s) => s.id);

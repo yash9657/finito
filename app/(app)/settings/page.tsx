@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { LogOut, Cpu, ChevronRight } from "lucide-react";
+import { LogOut, Cpu, ShieldCheck, ChevronRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -82,6 +82,25 @@ export default async function SettingsPage() {
                 <span className="font-medium">Models</span>
                 <span className="text-xs text-muted">
                   Configure LLM providers and per-step model assignments.
+                </span>
+              </div>
+              <ChevronRight className="h-4 w-4 text-muted" />
+            </CardContent>
+          </Card>
+        </Link>
+      </section>
+
+      {/* Approvals */}
+      <section className="mb-8">
+        <Link href="/settings/approvals" className="block">
+          <Card className="transition-colors hover:border-muted">
+            <CardContent className="flex items-center gap-4 p-4">
+              <ShieldCheck className="h-5 w-5 text-accent" strokeWidth={1.75} />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <span className="font-medium">Approvals</span>
+                <span className="text-xs text-muted">
+                  Amount ceilings, approved counterparties, separation of duties, and standing
+                  rules.
                 </span>
               </div>
               <ChevronRight className="h-4 w-4 text-muted" />

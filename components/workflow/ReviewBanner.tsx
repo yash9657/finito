@@ -6,6 +6,8 @@
  * The human review gate rendered under the live workflow view. It has three
  * visible states, keyed off `workflow.status`:
  *
+ *   - `awaiting_approval` → suspended-pending-authorization notice; the decisions
+ *     themselves live in `ApprovalPanel` directly above (Plan 3, D-A10).
  *   - `awaiting_review` → prominent warning bar with a comment textarea and the
  *     three decision buttons (Approve / Request revision / Reject). Each POSTs
  *     `{ decision, comment }` to `/api/workflows/[id]/review`, then calls
@@ -25,6 +27,7 @@ import {
   Check,
   RotateCcw,
   AlertCircle,
+  ShieldAlert,
   XCircle,
   CheckCircle2,
   Loader2,
@@ -107,6 +110,20 @@ export default function ReviewBanner({
     } finally {
       setRerunning(false);
     }
+  }
+
+  /* ---- awaiting approval: suspended on per-action authorization (Plan 3, D-A10) ---- */
+  if (workflow.status === "awaiting_approval") {
+    return (
+      <div className="m-3 flex flex-wrap items-center gap-2 rounded-lg border border-warning/30 bg-warning/[0.06] p-4 text-sm text-warning">
+        <ShieldAlert className="h-4 w-4 shrink-0" />
+        <span className="font-medium">Suspended pending authorization</span>
+        <span className="text-warning/80">
+          Nothing has been committed — decide the actions above and the run continues from
+          where it stopped.
+        </span>
+      </div>
+    );
   }
 
   /* ---- awaiting review: the decision gate ---- */

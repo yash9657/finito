@@ -4,6 +4,7 @@ import { use } from "react";
 import { useWorkflowStatus } from "@/lib/hooks/useWorkflowStatus";
 import { LiveWorkflowView } from "@/components/workflow/LiveWorkflowView";
 import OutputPanel from "@/components/workflow/OutputPanel";
+import ApprovalPanel from "@/components/workflow/ApprovalPanel";
 import ReviewBanner from "@/components/workflow/ReviewBanner";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -85,6 +86,7 @@ export default function WorkflowPage({
   }
 
   const { workflow, steps, review } = data;
+  const actions = data.actions ?? [];
 
   return (
     <div className="flex h-full flex-col">
@@ -114,6 +116,9 @@ export default function WorkflowPage({
         </div>
       </div>
 
+      {/* Per-action authorization (Plan 3 §6) sits above the end-of-run review gate:
+          consequential actions are decided before they happen, the deliverable after. */}
+      <ApprovalPanel workflow={workflow} actions={actions} onDecided={refetch} />
       <ReviewBanner workflow={workflow} review={review} onDecided={refetch} />
     </div>
   );

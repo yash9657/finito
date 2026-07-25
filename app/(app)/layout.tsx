@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { LayoutDashboard, Plus, Settings, Cpu, LogOut } from "lucide-react";
+import { LayoutDashboard, Plus, Settings, Cpu, ShieldCheck, LogOut } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 
 async function signOut() {
@@ -58,6 +58,13 @@ export default async function AppLayout({
           >
             <Cpu className="h-4 w-4 text-muted" />
             Models
+          </Link>
+          <Link
+            href="/settings/approvals"
+            className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-foreground transition-colors hover:bg-border"
+          >
+            <ShieldCheck className="h-4 w-4 text-muted" />
+            Approvals
           </Link>
           <Link
             href="/settings"
