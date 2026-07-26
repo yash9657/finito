@@ -1,10 +1,19 @@
 /**
- * OpenAI provider (Plan 2 §2.2, D-P9/D-P10) — plain `fetch` against the Chat
- * Completions REST API, no `openai` SDK. custom-endpoint.ts reuses the shared
- * helpers here (custom = same body shape, custom base_url, json_object mode).
+ * OpenAI provider (Plan 2 §2.2, D-P9/D-P10; tool calling added by Plan 5, D-G14) — plain `fetch`
+ * against the Chat Completions REST API, no `openai` SDK. custom-endpoint.ts reuses the shared
+ * helpers here (custom = same body shape, custom base_url, json_object mode), which is also how
+ * DeepSeek, vLLM and LM Studio are reached.
  *
- * The request-body builder (`buildChatCompletionsBody`) is a pure exported function so
- * N1 tests can assert the exact JSON without a network call.
+ * The request-body builder is a pure exported function so the provider tests assert the exact JSON
+ * without a network call — the regression gate for "the legacy path did not move".
+ *
+ * ## The trap, and it is a real one
+ *
+ * `function.arguments` comes back as a **JSON string**, not an object. A strong model emits valid
+ * JSON in it; a weaker OpenAI-compatible gateway emits a trailing comma, a single-quoted key, or
+ * the whole object double-encoded. Parsing it with a bare `JSON.parse` and letting the throw
+ * escape turns a recoverable formatting slip into a failed investigation, so every parse goes
+ * through `repairArguments` (D-G17) and every repair is marked.
  */
 
 import {
@@ -19,6 +28,14 @@ import {
   type LLMProvider,
   type ProviderId,
 } from "@/lib/llm/provider";
+import {
+  fromLegacyMessages,
+  type CanonicalMessage,
+  type StopReason,
+  type ToolCall,
+  type ToolDefinition,
+} from "@/lib/llm/messages";
+import { repairArguments, salvageToolCalls } from "@/lib/llm/salvage";
 
 const DEFAULT_BASE_URL = "https://api.openai.com";
 
@@ -26,9 +43,9 @@ const DEFAULT_BASE_URL = "https://api.openai.com";
 export type JsonMode = "json_schema" | "json_object";
 
 /**
- * Compose the system prompt, appending the schema for weak-JSON endpoints
- * (json_object mode) so the model still sees the target shape (D-P9). OpenAI strict
- * json_schema mode does NOT need this — the schema rides in `response_format`.
+ * Compose the system prompt, appending the schema for weak-JSON endpoints (json_object mode) so
+ * the model still sees the target shape (D-P9). OpenAI strict json_schema mode does NOT need this
+ * — the schema rides in `response_format`.
  */
 export function composeSystemPrompt(params: LLMCompleteParams, appendSchema: boolean): string {
   if (appendSchema && params.responseFormat === "json" && params.jsonSchema) {
@@ -39,28 +56,100 @@ export function composeSystemPrompt(params: LLMCompleteParams, appendSchema: boo
   return params.systemPrompt;
 }
 
+/** A Chat-Completions message, in the shapes this provider emits. */
+type ChatMessage =
+  | { role: "system" | "user"; content: string }
+  | {
+      role: "assistant";
+      content: string | null;
+      tool_calls?: {
+        id: string;
+        type: "function";
+        function: { name: string; arguments: string };
+      }[];
+    }
+  | { role: "tool"; tool_call_id: string; content: string };
+
 /**
- * Build a Chat-Completions request body (pure). `jsonMode` selects the
- * `response_format`; when it is `json_object` the schema is appended to the system
- * prompt instead (weak-JSON path shared with custom endpoints).
+ * Turn the canonical conversation into Chat-Completions messages.
+ *
+ * Note the asymmetry with Anthropic: results are emitted as ONE `role:'tool'` message PER call,
+ * because that is what this API's `tool_call_id` field is for. The canonical form batches them
+ * (Anthropic's requirement), so this is where the batch is unpacked.
+ */
+export function toChatMessages(conversation: CanonicalMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+
+  for (const msg of conversation) {
+    if (msg.role === "user") {
+      out.push({ role: "user", content: msg.content });
+      continue;
+    }
+
+    if (msg.role === "tool") {
+      for (const result of msg.toolResults ?? []) {
+        out.push({ role: "tool", tool_call_id: result.toolCallId, content: result.content });
+      }
+      continue;
+    }
+
+    const calls = msg.toolCalls ?? [];
+    const assistant: ChatMessage = {
+      role: "assistant",
+      // `null`, not `''`: some OpenAI-compatible gateways reject an empty string alongside
+      // tool_calls, and null is what the API's own examples use for a tool-only turn.
+      content: msg.content.length > 0 ? msg.content : calls.length > 0 ? null : "",
+    };
+    if (calls.length > 0) {
+      assistant.tool_calls = calls.map((c) => ({
+        id: c.id,
+        type: "function" as const,
+        function: { name: c.name, arguments: JSON.stringify(c.arguments) },
+      }));
+    }
+    out.push(assistant);
+  }
+
+  return out;
+}
+
+/** Canonical tool choice → the Chat-Completions spelling (they happen to match). */
+function toChatToolChoice(choice: LLMCompleteParams["toolChoice"]): string | undefined {
+  if (choice === undefined) return undefined;
+  return choice;
+}
+
+/**
+ * Build a Chat-Completions request body (pure). `jsonMode` selects the `response_format`; when it
+ * is `json_object` the schema is appended to the system prompt instead (weak-JSON path shared with
+ * custom endpoints).
  */
 export function buildChatCompletionsBody(
   params: LLMCompleteParams,
   jsonMode: JsonMode,
 ): Record<string, unknown> {
-  const wantsJson = params.responseFormat === "json";
+  const hasTools = (params.tools?.length ?? 0) > 0;
+  const wantsJson = params.responseFormat === "json" && !hasTools;
   const schemaInPrompt = wantsJson && jsonMode === "json_object";
   const system = composeSystemPrompt(params, schemaInPrompt);
+  const conversation = params.conversation ?? fromLegacyMessages(params.messages);
 
   const body: Record<string, unknown> = {
     model: params.model,
     max_completion_tokens: params.maxTokens,
-    messages: [
-      { role: "system", content: system },
-      ...params.messages.map((m) => ({ role: m.role, content: m.content })),
-    ],
+    messages: [{ role: "system", content: system }, ...toChatMessages(conversation)],
   };
 
+  if (hasTools) {
+    body.tools = params.tools!.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+    const choice = toChatToolChoice(params.toolChoice);
+    if (choice) body.tool_choice = choice;
+  }
+
+  // Forced JSON output and tools are mutually exclusive (D-G14).
   if (wantsJson) {
     if (jsonMode === "json_schema" && params.jsonSchema) {
       body.response_format = {
@@ -75,10 +164,63 @@ export function buildChatCompletionsBody(
   return body;
 }
 
+interface ChatToolCall {
+  id?: string;
+  type?: string;
+  function?: { name?: string; arguments?: unknown };
+}
+
 interface ChatCompletionsResponse {
   model?: string;
-  choices?: { message?: { content?: string } }[];
+  choices?: {
+    message?: { content?: string | null; tool_calls?: ChatToolCall[] };
+    finish_reason?: string;
+  }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+/**
+ * Normalize `message.tool_calls[]` into canonical form.
+ *
+ * A call whose arguments cannot be repaired even against the schema is DROPPED rather than passed
+ * on with empty arguments: running `query_ledger` with no filters because its arguments were
+ * unreadable would return the whole ledger and look like a successful call. Dropping it leaves the
+ * turn with no calls, which the loop reports back to the model as a correctable failure.
+ */
+export function toCanonicalToolCalls(
+  raw: ChatToolCall[] | undefined,
+  tools: ToolDefinition[],
+): ToolCall[] {
+  if (!raw) return [];
+  const out: ToolCall[] = [];
+
+  raw.forEach((call, index) => {
+    const name = call.function?.name;
+    if (!name) return;
+    const tool = tools.find((t) => t.name === name);
+    if (!tool) return; // a tool we did not offer is not a tool we will run
+
+    const repaired = repairArguments(call.function?.arguments, tool);
+    if (!repaired) return;
+
+    out.push({
+      id: call.id ?? `call-${index}-${name}`,
+      name,
+      arguments: repaired.arguments,
+      ...(repaired.salvaged
+        ? { salvaged: true, salvageStrategy: repaired.strategy ?? "arguments_repair" }
+        : {}),
+    });
+  });
+
+  return out;
+}
+
+function toStopReason(finish: string | undefined): StopReason {
+  if (finish === "tool_calls" || finish === "function_call") return "tool_use";
+  if (finish === "stop") return "end";
+  if (finish === "length") return "length";
+  return "other";
 }
 
 /**
@@ -126,18 +268,36 @@ export async function chatCompletionsComplete(
   });
   const latencyMs = Date.now() - started;
 
-  const content = json.choices?.[0]?.message?.content;
-  if (typeof content !== "string") {
+  const choice = json.choices?.[0];
+  const content = choice?.message?.content;
+  const tools = params.tools ?? [];
+  let toolCalls = toCanonicalToolCalls(choice?.message?.tool_calls, tools);
+
+  // A tool-only turn legitimately carries no content, so the strict check applies only when we
+  // asked for no tools — otherwise the normal shape of a tool call would read as a failure.
+  if (typeof content !== "string" && toolCalls.length === 0 && tools.length === 0) {
     throw new LLMProviderError(id, undefined, "Response contained no message content");
   }
 
+  const text = typeof content === "string" ? content : "";
+
+  // Weak endpoints (Ollama behind an OpenAI shim, quantized local models, some gateways) write
+  // the tool call into the prose instead of `tool_calls`. Recover it, validated against the
+  // schema, and mark it — see D-G17 on why this is never silent.
+  if (toolCalls.length === 0 && tools.length > 0 && text.length > 0) {
+    toolCalls = salvageToolCalls(text, tools).toolCalls;
+  }
+
   return {
-    content,
+    content: text,
     modelUsed: json.model ?? params.model,
     tokensIn: json.usage?.prompt_tokens ?? 0,
     tokensOut: json.usage?.completion_tokens ?? 0,
     latencyMs,
     raw: json,
+    ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    stopReason:
+      toolCalls.length > 0 ? "tool_use" : toStopReason(choice?.finish_reason),
   };
 }
 

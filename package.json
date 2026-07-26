@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "demo-data": "tsx scripts/generate-demo-data.ts",
     "test": "vitest run",
-    "harness-proof": "tsx scripts/harness-proof.ts"
+    "harness-proof": "tsx scripts/harness-proof.ts",
+    "tool-calling-proof": "tsx scripts/tool-calling-proof.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.114.0",

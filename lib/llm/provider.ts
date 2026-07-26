@@ -13,6 +13,15 @@
  * applied uniformly inside every provider file.
  */
 
+import type {
+  CanonicalMessage,
+  ProviderSidecar,
+  StopReason,
+  ToolCall,
+  ToolChoice,
+  ToolDefinition,
+} from "@/lib/llm/messages";
+
 export type ProviderId = "anthropic" | "openai" | "google" | "ollama" | "custom";
 
 export interface LLMCompleteParams {
@@ -21,6 +30,21 @@ export interface LLMCompleteParams {
   model: string;
   maxTokens: number;
   responseFormat?: "json" | "text";
+  /**
+   * The canonical conversation (Plan 5, D-G13/D-G14). When present it SUPERSEDES `messages` —
+   * providers build their body from this instead. Absent on every pre-Plan-5 call path, which is
+   * what keeps the legacy request bodies byte-identical (the existing provider tests assert them
+   * exactly, and are the regression gate for that claim).
+   */
+  conversation?: CanonicalMessage[];
+  /**
+   * Tools offered on this call. When present, native JSON-schema output is NOT sent alongside
+   * them: forcing a JSON object while also offering tool calls is contradictory, and providers
+   * disagree about which wins — a disagreement that would surface as "tool calling is broken on
+   * X" rather than as a bug here.
+   */
+  tools?: ToolDefinition[];
+  toolChoice?: ToolChoice;
   /** Plain JSON Schema for the expected output when responseFormat === 'json'.
    *  Providers with native schema enforcement use it (D-P9); others embed it in
    *  the prompt. Produced by lib/llm/json-schema.ts from the step's zod schema. */
@@ -38,6 +62,16 @@ export interface LLMCompleteResult {
   latencyMs: number;
   raw: unknown; // full provider response body (router redacts+caps, D-P11)
   reasoningNative?: string; // provider-native reasoning (Anthropic thinking blocks)
+  /** Tool calls the model asked for, normalized to canonical form (Plan 5, D-G13). */
+  toolCalls?: ToolCall[];
+  /** Why generation stopped. `tool_use` is what drives the agent loop's continue decision. */
+  stopReason?: StopReason;
+  /**
+   * Opaque provider-native reasoning state to replay on the NEXT turn of the same conversation,
+   * if it goes to this same provider (D-G13). Anthropic thinking blocks carry signatures that
+   * must be echoed verbatim; Gemini parts carry thought signatures with the same property.
+   */
+  sidecar?: ProviderSidecar;
 }
 
 /** The result of a connection test — never carries a body, only a mapped message. */
