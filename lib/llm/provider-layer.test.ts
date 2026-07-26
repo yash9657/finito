@@ -100,6 +100,49 @@ describe("redactAndCap", () => {
     const out = redactAndCap({ hello: "world", n: 3 });
     expect(out).toEqual({ hello: "world", n: 3 });
   });
+
+  /*
+   * Regression (Plan 5): `/token/i` also matches `tokens_in`.
+   *
+   * Harmless while this only guarded `llm_raw` — usage lived in dedicated columns (D-P12) — but
+   * Plan 4 reused it for harness_events payloads, where `loop.ts` writes its own token counts on
+   * every `step_completed`. Those were being stored as "[redacted]", which quietly made
+   * PLAN-4's "the usage dashboard becomes a query over the event stream" impossible.
+   */
+  it("does NOT redact token COUNTS — they are telemetry, not credentials", () => {
+    const out = redactAndCap({
+      tokens_in: 1200,
+      tokens_out: 340,
+      max_tokens: 16000,
+      estimated_tokens_before: 90_000,
+      estimated_tokens_after: 40_000,
+      usage: { input_tokens: 1200, output_tokens: 340, prompt_eval_count: 12 },
+    }) as Record<string, unknown>;
+
+    expect(out.tokens_in).toBe(1200);
+    expect(out.tokens_out).toBe(340);
+    expect(out.max_tokens).toBe(16000);
+    expect(out.estimated_tokens_before).toBe(90_000);
+    expect((out.usage as Record<string, unknown>).input_tokens).toBe(1200);
+  });
+
+  it("still redacts every credential-shaped token key", () => {
+    // The allowlist is exact-match, so anything not explicitly known stays fail-closed.
+    const out = redactAndCap({
+      access_token: "a",
+      refresh_token: "b",
+      id_token: "c",
+      bearer_token: "d",
+      token: "e",
+      session_token_hint: "f",
+      client_secret: "g",
+      password: "h",
+    }) as Record<string, unknown>;
+
+    for (const key of Object.keys(out)) {
+      expect(out[key], `${key} must be redacted`).toBe("[redacted]");
+    }
+  });
 });
 
 /* -------------------------------------------------------------------------- */
