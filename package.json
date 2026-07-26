@@ -9,10 +9,14 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "demo-data": "tsx scripts/generate-demo-data.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "harness-proof": "tsx scripts/harness-proof.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.114.0",
+    "@mastra/core": "^1.52.1",
+    "@mastra/libsql": "^1.17.0",
+    "@mastra/pg": "^1.17.0",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.110.8",
     "@vercel/functions": "^3.7.5",
