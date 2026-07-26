@@ -164,3 +164,128 @@ describe("resolveProvider (D-P7 order)", () => {
     expect(r.providerId).toBe("ollama");
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* The role tier (Plan 4, D-H13) — resolution tier 2, between the step pin and */
+/* the org default. This is what makes "matcher on Claude, commentary on our    */
+/* own Ollama, same run" expressible without pinning every step key.           */
+/* -------------------------------------------------------------------------- */
+
+describe("resolveProvider role tier (D-H13)", () => {
+  const originalEnv = process.env.ANTHROPIC_API_KEY;
+  const originalSecret = process.env.LLM_KEY_ENCRYPTION_SECRET;
+
+  beforeEach(() => {
+    process.env.LLM_KEY_ENCRYPTION_SECRET = "router-test-secret-0123456789";
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalEnv;
+    if (originalSecret === undefined) delete process.env.LLM_KEY_ENCRYPTION_SECRET;
+    else process.env.LLM_KEY_ENCRYPTION_SECRET = originalSecret;
+  });
+
+  const orgDefault = config({ id: "cfg-default", provider: "openai", is_default: true });
+  const roleConfig = config({
+    id: "cfg-role-ollama",
+    provider: "ollama",
+    base_url: "http://localhost:11434",
+    default_model: "llama3.2:3b",
+  });
+
+  /** A db where role `writer` is pinned to a local Ollama config. */
+  function dbWithRolePin(opts: { stepPin?: OrgModelConfig | null; roleActive?: boolean } = {}) {
+    return makeDb((table, f) => {
+      if (table === "workflow_step_configs") {
+        return opts.stepPin ? { assigned_provider_config_id: opts.stepPin.id } : null;
+      }
+      if (table === "org_role_configs") {
+        return f.step_role === "writer"
+          ? { assigned_provider_config_id: roleConfig.id }
+          : null;
+      }
+      if (table === "org_model_configs") {
+        if (f.id === roleConfig.id) {
+          return { ...roleConfig, is_active: opts.roleActive ?? true };
+        }
+        if (opts.stepPin && f.id === opts.stepPin.id) return opts.stepPin;
+        if (f.is_default === true) return orgDefault;
+      }
+      return null;
+    });
+  }
+
+  it("a role pin beats the org default", async () => {
+    const r = await resolveProvider(dbWithRolePin(), {
+      orgId: ORG,
+      workflowType: "reconciliation",
+      stepKey: "report",
+      role: "writer",
+    });
+    expect(r.providerId).toBe("ollama");
+    expect(r.configId).toBe("cfg-role-ollama");
+  });
+
+  it("a step pin beats a role pin — the more specific tier wins", async () => {
+    const stepPin = config({ id: "cfg-step", provider: "google", default_model: "gemini-2.5-pro" });
+    const r = await resolveProvider(dbWithRolePin({ stepPin }), {
+      orgId: ORG,
+      workflowType: "reconciliation",
+      stepKey: "report",
+      role: "writer",
+    });
+    expect(r.providerId).toBe("google");
+  });
+
+  it("falls through to the org default for a role with no pin", async () => {
+    const r = await resolveProvider(dbWithRolePin(), {
+      orgId: ORG,
+      workflowType: "reconciliation",
+      stepKey: "match",
+      role: "matcher",
+    });
+    expect(r.providerId).toBe("openai");
+    expect(r.configId).toBe("cfg-default");
+  });
+
+  it("skips the role tier entirely when no role is passed (legacy call sites)", async () => {
+    const r = await resolveProvider(dbWithRolePin(), {
+      orgId: ORG,
+      workflowType: "reconciliation",
+      stepKey: "report",
+    });
+    expect(r.providerId).toBe("openai");
+  });
+
+  it("treats an inactive role-pinned config as absent, with a warning", async () => {
+    // A deactivated provider must degrade the run visibly, not fail it mid-close.
+    const r = await resolveProvider(dbWithRolePin({ roleActive: false }), {
+      orgId: ORG,
+      workflowType: "reconciliation",
+      stepKey: "report",
+      role: "writer",
+    });
+    expect(r.providerId).toBe("openai");
+    expect(r.warning).toMatch(/role "writer" is inactive/);
+  });
+
+  it("two roles in one run resolve to different providers", async () => {
+    const db = dbWithRolePin();
+    const writer = await resolveProvider(db, {
+      orgId: ORG,
+      workflowType: "reconciliation",
+      stepKey: "report",
+      role: "writer",
+    });
+    const matcher = await resolveProvider(db, {
+      orgId: ORG,
+      workflowType: "reconciliation",
+      stepKey: "match",
+      role: "matcher",
+    });
+    // The brief's mid-workflow model-swap requirement, as a unit assertion.
+    expect(writer.providerId).toBe("ollama");
+    expect(matcher.providerId).toBe("openai");
+  });
+});

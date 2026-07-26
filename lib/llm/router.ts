@@ -19,6 +19,7 @@ import { decryptApiKey } from "@/lib/llm/crypto";
 import type {
   LlmInvokeResult,
   OrgModelConfig,
+  StepRole,
   WorkflowType,
 } from "@/lib/types";
 
@@ -72,18 +73,31 @@ function resolveFromConfig(config: OrgModelConfig, warning?: string): ResolvedPr
 }
 
 /**
- * Resolve the provider for a step following the D-P7 order:
- *   1. workflow_step_configs pin (if the assigned config is active).
- *   2. else the org's active default config.
- *   3. else the env-var implicit Anthropic config (if ANTHROPIC_API_KEY set).
- *   4. else throw NoProviderConfiguredError.
- * An inactive pinned config is treated as absent, carrying a warning for the step footer.
+ * Resolve the provider for a step, following the D-P7 order extended with the role tier
+ * (Plan 4, D-H13) — most specific first:
+ *   1. workflow_step_configs pin for this exact (workflow_type, step_key).
+ *   2. org_role_configs pin for this step's `role`.
+ *   3. else the org's active default config.
+ *   4. else the env-var implicit Anthropic config (if ANTHROPIC_API_KEY set).
+ *   5. else throw NoProviderConfiguredError.
+ *
+ * An inactive pinned config at any tier is treated as absent and falls through, carrying a
+ * warning for the step footer — an org that deactivates a provider gets a degraded run
+ * with a visible reason, not a hard failure mid-close.
+ *
+ * `role` is optional so the legacy runner's call sites keep working unchanged; when it is
+ * omitted tier 2 is simply skipped.
  */
 export async function resolveProvider(
   db: SupabaseAdmin,
-  args: { orgId: string; workflowType: WorkflowType; stepKey: string },
+  args: {
+    orgId: string;
+    workflowType: WorkflowType;
+    stepKey: string;
+    role?: StepRole;
+  },
 ): Promise<ResolvedProvider> {
-  const { orgId, workflowType, stepKey } = args;
+  const { orgId, workflowType, stepKey, role } = args;
   let warning: string | undefined;
 
   // 1. Per-step pin.
@@ -107,7 +121,32 @@ export async function resolveProvider(
     warning = `Pinned provider for step "${stepKey}" is inactive; using the org default instead.`;
   }
 
-  // 2. Org default (active).
+  // 2. Per-role pin (D-H13). This is the tier that makes "matcher on Claude, commentary
+  // on our own Ollama" work across every workflow without pinning each step key.
+  if (role) {
+    const { data: rolePin } = await db
+      .from("org_role_configs")
+      .select("assigned_provider_config_id")
+      .eq("org_id", orgId)
+      .eq("step_role", role)
+      .maybeSingle<{ assigned_provider_config_id: string }>();
+
+    if (rolePin?.assigned_provider_config_id) {
+      const { data: config } = await db
+        .from("org_model_configs")
+        .select("*")
+        .eq("id", rolePin.assigned_provider_config_id)
+        .maybeSingle<OrgModelConfig>();
+      if (config && config.is_active) {
+        return resolveFromConfig(config, warning);
+      }
+      warning =
+        warning ??
+        `Provider assigned to role "${role}" is inactive; using the org default instead.`;
+    }
+  }
+
+  // 3. Org default (active).
   const { data: def } = await db
     .from("org_model_configs")
     .select("*")
@@ -117,7 +156,7 @@ export async function resolveProvider(
     .maybeSingle<OrgModelConfig>();
   if (def) return resolveFromConfig(def, warning);
 
-  // 3. Env-var implicit Anthropic config (D-P4).
+  // 4. Env-var implicit Anthropic config (D-P4).
   const envKey = process.env.ANTHROPIC_API_KEY;
   if (envKey && envKey.length > 0) {
     return {
@@ -130,7 +169,7 @@ export async function resolveProvider(
     };
   }
 
-  // 4. Nothing left.
+  // 5. Nothing left.
   throw new NoProviderConfiguredError();
 }
 
@@ -227,6 +266,62 @@ export async function invoke<T>(
   // Unreachable: the loop returns or throws on both attempts.
   void lastResult;
   throw new Error("invoke exhausted retries without a result");
+}
+
+/* -------------------------------------------------------------------------- */
+/* dispatch — the single entry point for every LLM call (Plan 4, D-H13)        */
+/* -------------------------------------------------------------------------- */
+
+export interface DispatchArgs<T> {
+  orgId: string;
+  workflowType: WorkflowType;
+  /** The agent role making the call — resolution tier 2 (D-H13). */
+  role: StepRole;
+  /** The DAG step key — resolution tier 1, the most specific pin. */
+  stepKey: string;
+  system: string;
+  user: string;
+  schema: z.ZodType<T>;
+}
+
+/**
+ * Resolve a provider for (org, role, step) and issue one validated structured-output call.
+ *
+ * This is the ONLY function harness code calls to reach a model (D-H13). It exists as a
+ * named seam rather than leaving callers to compose `resolveProvider` + `invoke` for two
+ * reasons: it is the thing an ESLint boundary rule can point at, and it puts resolution
+ * and invocation in one place so a caller cannot accidentally resolve once and reuse the
+ * result across roles — which is precisely how "the same run uses different models per
+ * role" would silently stop being true.
+ *
+ * Returns the validated data plus `meta` carrying `providerId`/`modelUsed` — the caller
+ * (always `lib/harness/loop.ts`) stamps those onto the harness events it writes, so which
+ * model produced which action is visible in the trace rather than inferred.
+ *
+ * A decrypted key never leaves this frame: `resolved` is local, and `LlmInvokeResult`
+ * carries no key field (Plan 2 §9).
+ */
+export type DispatchResult<T> = LlmInvokeResult<T> & {
+  /** Set when resolution fell through an inactive pin — surfaced in the step footer. */
+  warning?: string;
+};
+
+export async function dispatch<T>(
+  db: SupabaseAdmin,
+  args: DispatchArgs<T>,
+): Promise<DispatchResult<T>> {
+  const resolved = await resolveProvider(db, {
+    orgId: args.orgId,
+    workflowType: args.workflowType,
+    stepKey: args.stepKey,
+    role: args.role,
+  });
+  const result = await invoke(resolved, {
+    system: args.system,
+    user: args.user,
+    schema: args.schema,
+  });
+  return resolved.warning ? { ...result, warning: resolved.warning } : result;
 }
 
 /** Append the failed assistant turn + a corrective user message for the retry. */

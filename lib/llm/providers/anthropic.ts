@@ -11,6 +11,7 @@
 
 import Anthropic, { APIError, RateLimitError } from "@anthropic-ai/sdk";
 import {
+  defaultTestConnection,
   LLMProviderError,
   TransportError,
   parseRetryAfter,
@@ -62,6 +63,9 @@ function thinkingReasoning(message: Anthropic.Message): string {
 
 export const anthropicProvider: LLMProvider = {
   id: "anthropic",
+  testConnection(params) {
+    return defaultTestConnection(anthropicProvider, params);
+  },
   async complete(params: LLMCompleteParams): Promise<LLMCompleteResult> {
     const client = new Anthropic({
       apiKey: params.apiKey,

@@ -10,12 +10,16 @@
 
 import {
   LLMProviderError,
+  defaultTestConnection,
   type LLMProvider,
 } from "@/lib/llm/provider";
 import { chatCompletionsComplete } from "@/lib/llm/providers/openai";
 
 export const customProvider: LLMProvider = {
   id: "custom",
+  testConnection(params) {
+    return defaultTestConnection(customProvider, params);
+  },
   complete(params) {
     if (!params.baseUrl) {
       throw new LLMProviderError("custom", undefined, "Custom endpoint requires a base URL");

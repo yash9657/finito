@@ -40,9 +40,76 @@ export interface LLMCompleteResult {
   reasoningNative?: string; // provider-native reasoning (Anthropic thinking blocks)
 }
 
+/** The result of a connection test — never carries a body, only a mapped message. */
+export interface TestConnectionResult {
+  ok: boolean;
+  modelUsed?: string;
+  latencyMs?: number;
+  error?: string;
+}
+
+export interface TestConnectionParams {
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+}
+
 export interface LLMProvider {
   id: ProviderId;
   complete(params: LLMCompleteParams): Promise<LLMCompleteResult>;
+  /**
+   * Confirm this provider authenticates and the model exists (Plan 4, D-H11).
+   *
+   * On the interface rather than in a caller that switches on `id`, so the Plan 4
+   * property holds literally: a new provider is one file implementing this interface and
+   * nothing else changes. Most providers delegate to `defaultTestConnection` — the
+   * minimal-completion probe below is genuinely provider-agnostic — but a provider with a
+   * cheaper read-only capability endpoint may override it instead of burning tokens.
+   */
+  testConnection(params: TestConnectionParams): Promise<TestConnectionResult>;
+}
+
+/** A connection test must never run long (D-P13). */
+const TEST_TIMEOUT_MS = 15_000;
+/** ~10 tokens, not persisted (D-P12). */
+const TEST_MAX_TOKENS = 8;
+
+/**
+ * The shared connection probe: one minimal completion, timed out, with provider errors
+ * mapped to human text and never to a response body (D-P10).
+ *
+ * Takes the provider explicitly rather than using `this`, so it works identically whether
+ * a provider delegates to it or a caller invokes it directly, and so it cannot be broken
+ * by an object-literal losing its binding.
+ */
+export async function defaultTestConnection(
+  provider: Pick<LLMProvider, "id" | "complete">,
+  params: TestConnectionParams,
+): Promise<TestConnectionResult> {
+  try {
+    const result = await Promise.race([
+      provider.complete({
+        systemPrompt: "You are a connection test.",
+        messages: [{ role: "user", content: "Reply with exactly: OK" }],
+        model: params.model,
+        maxTokens: TEST_MAX_TOKENS,
+        responseFormat: "text",
+        apiKey: params.apiKey,
+        baseUrl: params.baseUrl,
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new LLMProviderError(provider.id, undefined, "Endpoint unreachable")),
+          TEST_TIMEOUT_MS,
+        ),
+      ),
+    ]);
+    return { ok: true, modelUsed: result.modelUsed, latencyMs: result.latencyMs };
+  } catch (err) {
+    // Only a mapped message escapes — never the request/response body (§9).
+    const message = err instanceof LLMProviderError ? err.message : "Connection test failed";
+    return { ok: false, error: message };
+  }
 }
 
 /**

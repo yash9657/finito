@@ -14,6 +14,7 @@ import {
   LLMProviderError,
   LLM_TIMEOUT_MS,
   TransportError,
+  defaultTestConnection,
   parseRetryAfter,
   withTransportRetry,
   type LLMCompleteParams,
@@ -76,6 +77,9 @@ interface GenerateContentResponse {
 
 export const googleProvider: LLMProvider = {
   id: "google",
+  testConnection(params) {
+    return defaultTestConnection(googleProvider, params);
+  },
   async complete(params: LLMCompleteParams): Promise<LLMCompleteResult> {
     if (!params.apiKey) {
       throw new LLMProviderError("google", undefined, "Google provider requires an API key");

@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 import { getProvider } from "@/lib/llm/providers";
-import { LLMProviderError, type ProviderId } from "@/lib/llm/provider";
+import type { ProviderId, TestConnectionResult } from "@/lib/llm/provider";
 import { validateBaseUrl } from "@/lib/llm/url-guard";
 import { providerIdEnum } from "@/lib/types";
 
@@ -57,44 +57,28 @@ export function validateConfigInput(
   return null;
 }
 
-export interface TestConnectionResult {
-  ok: boolean;
-  modelUsed?: string;
-  latencyMs?: number;
-  error?: string;
-}
-
-const TEST_TIMEOUT_MS = 15_000;
+/**
+ * Re-exported so the API routes keep importing the result type from here (Plan 2 §5)
+ * while its definition lives with the interface that produces it (Plan 4, D-H11).
+ */
+export type { TestConnectionResult } from "@/lib/llm/provider";
 
 /**
- * Make a single minimal completion to confirm the provider authenticates and the model
- * exists. Not persisted, ~10 tokens (D-P12). Maps provider errors to human text.
+ * Confirm a provider config authenticates and its model is usable.
+ *
+ * Delegates to `provider.testConnection` (D-H11): the probe belongs to the provider, so
+ * one with a better check than a throwaway completion — Ollama listing its pulled models
+ * — can supply it without this function growing a branch per provider.
  */
-export async function testProviderConnection(args: {
+export function testProviderConnection(args: {
   provider: ProviderId;
   apiKey?: string;
   baseUrl?: string;
   model: string;
 }): Promise<TestConnectionResult> {
-  const provider = getProvider(args.provider);
-  try {
-    const result = await Promise.race([
-      provider.complete({
-        systemPrompt: "You are a connection test.",
-        messages: [{ role: "user", content: "Reply with exactly: OK" }],
-        model: args.model,
-        maxTokens: 8,
-        responseFormat: "text",
-        apiKey: args.apiKey,
-        baseUrl: args.baseUrl,
-      }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new LLMProviderError(args.provider, undefined, "Endpoint unreachable")), TEST_TIMEOUT_MS),
-      ),
-    ]);
-    return { ok: true, modelUsed: result.modelUsed, latencyMs: result.latencyMs };
-  } catch (err) {
-    const message = err instanceof LLMProviderError ? err.message : "Connection test failed";
-    return { ok: false, error: message };
-  }
+  return getProvider(args.provider).testConnection({
+    model: args.model,
+    apiKey: args.apiKey,
+    baseUrl: args.baseUrl,
+  });
 }

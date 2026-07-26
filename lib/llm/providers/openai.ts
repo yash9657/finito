@@ -8,6 +8,7 @@
  */
 
 import {
+  defaultTestConnection,
   LLMProviderError,
   LLM_TIMEOUT_MS,
   TransportError,
@@ -149,6 +150,9 @@ export function mapStatus(status: number): string {
 
 export const openaiProvider: LLMProvider = {
   id: "openai",
+  testConnection(params) {
+    return defaultTestConnection(openaiProvider, params);
+  },
   complete(params) {
     return chatCompletionsComplete("openai", "json_schema", params, DEFAULT_BASE_URL);
   },
