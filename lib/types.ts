@@ -371,6 +371,14 @@ export interface DagStepDefinition {
    */
   risk?: RiskClass;
   /**
+   * The uploaded file this step reads, when it reads exactly one (Plan 4, §1).
+   *
+   * Declared rather than inferred so the harness loop can synthesize a `normalize_dataset`
+   * action naming a specific file, and the dataset verifier can bind that action to the
+   * file's content hash. Absent for steps that read prior outputs instead of raw files.
+   */
+  fileType?: FileType;
+  /**
    * The consequential acts this step wants to commit, computed deterministically from
    * files + prior outputs (D-A1/D-A13). Must not call `ctx.llm`. The same helper that
    * derives these must derive the set `run` commits, so gate and commit cannot diverge.
@@ -608,6 +616,60 @@ export interface ReviewDecision {
   decision: ReviewDecisionValue;
   comment: string | null;
   decided_at: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Plan 4 — the harness event stream (§1, D-H2/D-H7).                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The event vocabulary (D-H7). Twelve types: the eleven the Plan 4 brief lists plus
+ * `action_failed_verification`, which is the one that evidences the gate actually
+ * blocking something — an audit trail that can only record successes proves nothing.
+ *
+ * Ordering here is the lifecycle order of `executeStep` (D-H8), not alphabetical, so the
+ * enum reads as the loop it describes.
+ */
+export const HARNESS_EVENT_TYPES = [
+  "step_started",
+  "action_proposed",
+  "action_verified",
+  "action_failed_verification",
+  "action_executed",
+  "observation_received",
+  "step_completed",
+  "step_failed",
+  "human_review_requested",
+  "human_decision",
+  "workflow_paused",
+  "workflow_resumed",
+] as const;
+export type HarnessEventType = (typeof HARNESS_EVENT_TYPES)[number];
+export const harnessEventTypeEnum = z.enum(HARNESS_EVENT_TYPES);
+
+/** Who caused the event. Same vocabulary as `audit_log.actor_type` (ActorType). */
+export const HARNESS_ACTORS = ["agent", "human", "system"] as const;
+export type HarnessActor = (typeof HARNESS_ACTORS)[number];
+
+/**
+ * A `harness_events` row (§1). Append-only: there is no code path that updates one, and
+ * the DB grants no UPDATE (D-H4). `sequence_number` is allocated by
+ * `append_harness_event`, never by a caller (D-H3).
+ */
+export interface HarnessEvent {
+  id: string;
+  workflow_id: string;
+  step_id: string | null;
+  step_key: string | null;
+  sequence_number: number;
+  event_type: HarnessEventType;
+  actor: HarnessActor;
+  payload: unknown;
+  /** Non-null only on events an LLM generated, which is how usage aggregates filter. */
+  provider_used: string | null;
+  model_used: string | null;
+  input_hash: string | null;
+  created_at: string;
 }
 
 /* -------------------------------------------------------------------------- */
