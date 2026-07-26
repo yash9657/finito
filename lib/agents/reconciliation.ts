@@ -128,6 +128,9 @@ function parseStep(
     track,
     name,
     kind: "deterministic",
+    // Declared for the harness loop's dataset verifier (Plan 4) — it binds the proposed
+    // normalization to this file's content hash before the step runs.
+    fileType,
     async run(ctx: StepContext): Promise<StepResult> {
       const pf = requireParsedFile(ctx, fileType);
       const { rowCount, skippedCount, filename, sha256 } = pf.meta;
