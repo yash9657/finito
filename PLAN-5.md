@@ -392,32 +392,65 @@ refusals terminate the run.
 | --- | --- | --- | --- |
 | **G0** | This document | reviewed before code | ✅ |
 | **G1** | `007_agent_events.sql` + canonical message format | migration applies to a throwaway `postgres:17` container before it is applied live | ✅ applied live, recorded as version 007 |
-| **G2** | Tool calling across all providers + capabilities + salvage | `scripts/tool-calling-proof.ts` green on every **configured** provider; wire-format parity for all five in `npm test` | ✅ offline half; live half **blocked on credentials** (see below) |
+| **G2** | Tool calling across all providers + capabilities + salvage | `scripts/tool-calling-proof.ts` green on every **configured** provider; wire-format parity for all five in `npm test` | ✅ **live on `anthropic/claude-sonnet-4-6`**; 4 providers skipped for want of credentials |
 | **G3** | The agent loop, bounded | a real investigation end-to-end with a full event trail | ✅ `npm run investigation-proof` passes against live Supabase |
-| **G4** | Provider swap | the same investigation on each configured provider | ⛔ **blocked on credentials** — the script exists and takes one env var |
-| **G5** | Full tool surface + compaction | compaction preserves every citation; results trimmed for the model, kept whole on the trail | ✅ unit-proven; the 30-turn live run is part of G4 |
+| **G4** | Provider swap | the same investigation on each configured provider | 🟡 **1 of 5 proven live** — real Claude run passes end to end; the other four need a key each |
+| **G5** | Full tool surface + compaction | compaction preserves every citation; results trimmed for the model, kept whole on the trail | ✅ unit-proven; the live run reached 6 turns / 47k tokens without needing compaction |
 | **G6** | `recommend_action` → approval queue | a recommendation appears in the existing panel; unverified ones are rejected pre-queue | ✅ proven live |
 | **G7** | Transcript UI + Realtime | parallel tool calls visibly concurrent | ✅ |
 
 Every milestone green on `npm run typecheck && npm run build && npm test` (383 tests).
 
-### What is actually blocked, and on what
+### Where the credentials actually live — and the proof bug that hid them
 
-`.env.local` carries a **placeholder** `ANTHROPIC_API_KEY` and no other vendor credential; nothing
-listens on `localhost:11434`. So no real model was called at any point in this build. That is a
-credentials gap, not a code gap, and the split is deliberate so it stays visible:
+`.env.local` carries a **placeholder** `ANTHROPIC_API_KEY`, and both proof scripts originally read
+env vars only. They therefore reported "no provider configured" for a project that had a perfectly
+good working key sitting in `org_model_configs` — because FinFlow's primary credential path is
+**BYOK**: a key entered in Settings → Models, AES-encrypted into the database, resolved through
+D-P7 tiers 1–3. The env var is the *last-resort fallback*, tier 4.
 
-| Proven, repeatedly, in CI | Not proven, and will not be until a key exists |
-| --- | --- |
-| The exact request bytes each provider receives, for all five (`lib/llm/tool-calling.test.ts`) | That a real model chooses sensible tools for a real question |
-| A recorded provider response → canonical tool calls, for all five | That any given model's answer is *good* |
-| The whole live path — Supabase, events, `caused_by`, approvals, answer validation (`npm run investigation-proof`, against a scripted local provider over real HTTP) | G4's headline claim: the same investigation on five different models |
+That was a false negative about the one thing those scripts exist to establish. Both now resolve
+the way the product does: the org's active configs first, with their keys decrypted, and env vars
+only for providers the org has not configured.
 
-`npm run tool-calling-proof` reports every unconfigured provider as SKIPPED with the reason and
-exits zero; it exits non-zero only when a **configured** provider fails. Supplying any one of
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, or an Ollama host
-turns that from INCONCLUSIVE into a real result with no code change. G4 is then
-`PROOF_USE_CONFIGURED_PROVIDER=1 npm run investigation-proof`, once per provider.
+With that fixed, on `anthropic/claude-sonnet-4-6`:
+
+- **`npm run tool-calling-proof`** → PASSED live. Real tool call, real result round-trip, usage
+  attributed.
+- **`PROOF_USE_CONFIGURED_PROVIDER=1 npm run investigation-proof`** → PASSED live. 32 gapless
+  events, 3 parallel tool calls on turn 1 each paired through `caused_by`, 5 recommendations
+  queued (all pending a human, every amount from its own row), 20 citations all resolving, and 7
+  figures — including two `difference` figures — recomputed in code.
+
+The remaining four providers each need one credential; nothing else changes.
+
+| Proven live | Proven offline, every commit | Still unproven |
+| --- | --- | --- |
+| Claude: tool calling, a full investigation, the approval path, the answer validator | The exact request bytes and response parsing for all five providers | That OpenAI / Gemini / DeepSeek / Ollama do this against a real endpoint |
+
+### What the first real run exposed
+
+Two of the three findings were bugs in the **proof script's assertions**, not the product, and are
+worth recording because both were the same mistake — an assertion written around the scripted
+fixture rather than around the property:
+
+1. It compared `action_requests[0]` to one hard-coded invoice. A real model recommends whatever it
+   likes, in whatever order. Now: *every* queued amount must equal its own row's amount.
+2. It recomputed every figure as a `sum`. The scripted provider only ever emits `sum`, so this
+   passed for months of fixtures and then reported a false failure the moment the real model used
+   `difference` — the proof asserting one thing while the product correctly did another. Now it
+   recomputes per operation, independently of `computeFigure` so the check is not tautological.
+
+The third was real, and is why running it for real matters:
+
+**D-G22 gains `maxRecommendations` (default 5, ceiling 10).** Asked "is anything ready for
+payment?", the agent queued **fifteen** payment approvals across three turns. Nothing unsafe
+happened — each was verified, each was left pending a human, each amount came from its own row, so
+every safety property held exactly as designed. The problem is the reviewer: a queue of fifteen
+near-identical approvals is precisely how people are trained to rubber-stamp, which is the failure
+D-H9 exists to prevent, arriving through the front door. The other bounds cap what a run costs;
+this one caps what it costs *a person*, which is the scarcer resource. It is enforced in the loop,
+not the prompt — the prompt already asked for restraint and did not get it.
 
 ### Two decisions that changed on contact with the code
 

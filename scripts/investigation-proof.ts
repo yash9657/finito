@@ -375,16 +375,38 @@ async function main(): Promise<void> {
   console.log("\nRecommendations");
   const { data: actions } = await db
     .from("action_requests")
-    .select("action_type, status, amount_cents, counterparty, summary")
+    .select("action_type, status, amount_cents, counterparty, summary, target_id")
     .eq("workflow_id", workflowId);
 
   if ((actions ?? []).length > 0) {
-    const action = actions![0];
-    ok(`queued in action_requests: ${action.action_type} → ${action.status}`);
-    if (action.amount_cents === invoiceRow.amountCents) {
-      ok(`the amount came from the source row (${action.amount_cents}c), not from the model`);
-    } else {
-      bad(`amount ${action.amount_cents}c does not match the row's ${invoiceRow.amountCents}c`);
+    ok(`${actions!.length} queued in action_requests`);
+
+    // Every queued amount must equal ITS OWN invoice row's amount.
+    //
+    // The first version of this check compared `actions[0]` against one hard-coded invoice,
+    // which only held because the scripted provider always recommends the same one. A real
+    // model recommends whatever it likes, in whatever order, so the assertion has to be the
+    // property we actually care about — each amount came from the row it names — rather than a
+    // fact about one fixture.
+    const byId = new Map(datasets.rows.map((r) => [r.sourceId, r]));
+    let mismatched = 0;
+    for (const action of actions!) {
+      const row = byId.get(action.target_id as string);
+      if (!row) {
+        bad(`queued action targets ${action.target_id}, which is not a real row`);
+        mismatched++;
+      } else if (action.amount_cents !== row.amountCents) {
+        bad(
+          `queued amount ${action.amount_cents}c ≠ row ${action.target_id}'s ${row.amountCents}c`,
+        );
+        mismatched++;
+      }
+    }
+    if (mismatched === 0) {
+      ok(`every queued amount came from its own source row, not from the model`);
+    }
+    if (actions!.every((a) => a.status === "pending")) {
+      ok(`all ${actions!.length} are pending a human — none executed`);
     }
   } else if (!USE_CONFIGURED) {
     bad("no recommendation reached action_requests");
@@ -404,15 +426,22 @@ async function main(): Promise<void> {
 
     for (const figure of outcome.answer.figures) {
       const { resolved } = resolveSourceIds(datasets.rows, figure.sourceIds);
-      const expected =
-        figure.operation === "count"
-          ? resolved.length
-          : resolved.reduce((s, r) => s + r.amountCents, 0);
+      // Recompute PER OPERATION. The first version summed everything, which silently passed for
+      // the scripted provider (which only ever emits `sum`) and then reported a false failure
+      // the moment a real model used `difference` — the proof asserting one thing while the
+      // product correctly did another.
+      const expected = independentlyRecompute(figure.operation, resolved.map((r) => r.amountCents),
+        resolved.map((r) => r.date));
       const actual = figure.operation === "count" ? figure.value : figure.valueCents;
       if (actual === expected) {
-        ok(`figure "${figure.ref}" = ${actual} recomputed from ${figure.sourceIds.length} row(s)`);
+        ok(
+          `figure "${figure.ref}" (${figure.operation}) = ${actual}, recomputed from ` +
+            `${figure.sourceIds.length} row(s)`,
+        );
       } else {
-        bad(`figure "${figure.ref}" is ${actual}, recomputation says ${expected}`);
+        bad(
+          `figure "${figure.ref}" (${figure.operation}) is ${actual}, recomputation says ${expected}`,
+        );
       }
     }
 
@@ -471,6 +500,31 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   console.log("\n\x1b[32m\x1b[1mPASSED\x1b[0m — a real investigation, end to end.\n");
+}
+
+/**
+ * An INDEPENDENT recomputation of a figure, written from the operation's definition rather than
+ * by calling `computeFigure`.
+ *
+ * Deliberately duplicated: importing the function under test would make this assertion tautological
+ * — it would confirm the code agrees with itself, which is the one thing that is never in doubt.
+ */
+function independentlyRecompute(
+  operation: string,
+  amounts: number[],
+  dates: (string | null)[],
+): number {
+  if (operation === "count") return amounts.length;
+  if (operation === "sum") return amounts.reduce((a, b) => a + b, 0);
+  if (operation === "average") {
+    return Math.round(amounts.reduce((a, b) => a + b, 0) / amounts.length);
+  }
+  // difference: latest minus earliest by date, falling back to citation order when undated.
+  if (amounts.length < 2) return amounts[0] ?? 0;
+  const dated = dates.every((d) => d !== null);
+  const pairs = amounts.map((amount, i) => ({ amount, date: dates[i] ?? "" }));
+  const ordered = dated ? [...pairs].sort((a, b) => a.date.localeCompare(b.date)) : pairs;
+  return ordered[ordered.length - 1].amount - ordered[0].amount;
 }
 
 function printTrail(events: HarnessEvent[]): void {

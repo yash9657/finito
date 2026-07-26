@@ -140,6 +140,58 @@ interface ProviderTarget {
   skip?: string;
 }
 
+/**
+ * Providers the ORG has configured, read from `org_model_configs` with their keys decrypted.
+ *
+ * This was missing in the first version of this script, and the omission mattered: FinFlow's
+ * primary credential path is BYOK — a key entered in Settings → Models, AES-encrypted into the
+ * database — and the env var is only the last-resort fallback tier (D-P7 step 4). Checking env
+ * vars alone reported "no provider configured" for a project that had a perfectly good working
+ * key in the table the app actually resolves from, which is a false negative about the one thing
+ * this script exists to establish.
+ */
+async function configuredTargets(): Promise<ProviderTarget[]> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceKey) return [];
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const { decryptApiKey } = await import("@/lib/llm/crypto");
+    const db = createClient(url, serviceKey, { auth: { persistSession: false } });
+
+    const { data } = await db
+      .from("org_model_configs")
+      .select("provider, display_name, default_model, base_url, api_key_ciphertext, is_active")
+      .eq("is_active", true);
+
+    return (data ?? []).map((row) => {
+      let apiKey: string | undefined;
+      try {
+        apiKey = row.api_key_ciphertext ? decryptApiKey(row.api_key_ciphertext) : undefined;
+      } catch {
+        // A key encrypted under a different LLM_KEY_ENCRYPTION_SECRET. Report it rather than
+        // silently skipping — it looks identical to "unconfigured" from the outside.
+        return {
+          id: row.provider as ProviderId,
+          label: `${row.display_name} (org config)`,
+          model: row.default_model as string,
+          skip: "stored key could not be decrypted (LLM_KEY_ENCRYPTION_SECRET mismatch?)",
+        };
+      }
+      return {
+        id: row.provider as ProviderId,
+        label: `${row.display_name} (org config)`,
+        model: row.default_model as string,
+        apiKey: apiKey && apiKey.length > 0 ? apiKey : undefined,
+        baseUrl: (row.base_url as string | null) ?? undefined,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
 function targets(): ProviderTarget[] {
   const out: ProviderTarget[] = [];
 
@@ -361,7 +413,14 @@ async function main(): Promise<void> {
     ? process.argv[process.argv.indexOf("--provider") + 1]
     : undefined;
 
-  const all = targets().filter((t) => !only || t.id === only);
+  // The org's own configured providers FIRST — that is the path the product actually resolves
+  // through (D-P7). Env vars are the fallback tier, and are only worth probing for a provider
+  // the org has not configured.
+  const configured = await configuredTargets();
+  const configuredIds = new Set(configured.filter((t) => !t.skip).map((t) => t.id));
+  const all = [...configured, ...targets().filter((t) => !configuredIds.has(t.id))].filter(
+    (t) => !only || t.id === only,
+  );
   const outcomes: Record<string, string> = {};
 
   for (const target of all) {

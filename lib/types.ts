@@ -752,6 +752,20 @@ export interface InvestigationBudget {
   maxTokens: number;
   maxWallClockMs: number;
   maxToolCallsPerTurn: number;
+  /**
+   * How many consequential actions ONE investigation may queue for review.
+   *
+   * Added after watching a real run: asked "is anything ready for payment?", the agent queued
+   * FIFTEEN payment approvals across three turns. Nothing unsafe happened — every one was
+   * verified, every one was left pending a human, and each amount came from its own row — so the
+   * safety property held exactly as designed. The problem is the reviewer: a queue of fifteen
+   * near-identical approvals is precisely how people are trained to rubber-stamp, which is the
+   * failure D-H9 exists to prevent, arriving through the front door instead of the back.
+   *
+   * The other bounds cap what the run COSTS. This one caps what it costs *a person*, which turns
+   * out to be the scarcer resource.
+   */
+  maxRecommendations: number;
 }
 
 /**

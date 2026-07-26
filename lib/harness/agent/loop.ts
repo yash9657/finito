@@ -59,6 +59,9 @@ export const DEFAULT_BUDGET: InvestigationBudget = {
   maxTokens: 300_000,
   maxWallClockMs: 5 * 60_000,
   maxToolCallsPerTurn: 5,
+  // Low on purpose. An investigation's job is to find the thing that needs a decision, not to
+  // hand a person a worklist — see the note on the field.
+  maxRecommendations: 5,
 };
 
 /**
@@ -73,6 +76,7 @@ export const BUDGET_CEILINGS: InvestigationBudget = {
   maxTokens: 1_000_000,
   maxWallClockMs: 15 * 60_000,
   maxToolCallsPerTurn: 8,
+  maxRecommendations: 10,
 };
 
 export function clampBudget(requested: Partial<InvestigationBudget> = {}): InvestigationBudget {
@@ -82,6 +86,7 @@ export function clampBudget(requested: Partial<InvestigationBudget> = {}): Inves
     maxTokens: clamp(merged.maxTokens, 1_000, BUDGET_CEILINGS.maxTokens),
     maxWallClockMs: clamp(merged.maxWallClockMs, 10_000, BUDGET_CEILINGS.maxWallClockMs),
     maxToolCallsPerTurn: clamp(merged.maxToolCallsPerTurn, 1, BUDGET_CEILINGS.maxToolCallsPerTurn),
+    maxRecommendations: clamp(merged.maxRecommendations, 0, BUDGET_CEILINGS.maxRecommendations),
   };
 }
 
@@ -398,6 +403,33 @@ export async function runInvestigation(
         response.meta,
         {},
       );
+
+      // The recommendation cap (D-G22). Enforced HERE, not in the prompt: the real run that
+      // motivated it had a prompt telling the agent to recommend only when confident, and it
+      // queued fifteen anyway. A bound a model can talk itself past is not a bound.
+      if (call.name === "recommend_action" && recommendations.length >= budget.maxRecommendations) {
+        const payload = {
+          ok: false,
+          summary:
+            `Refused: this investigation has already queued its limit of ` +
+            `${budget.maxRecommendations} recommendations.`,
+          hint:
+            "A reviewer can only give real attention to a handful of proposals. Describe any " +
+            "further candidates in your final answer as things worth looking at, rather than " +
+            "queueing them.",
+        };
+        results.push({
+          toolCallId: call.id,
+          name: call.name,
+          isError: true,
+          content: JSON.stringify(payload),
+        });
+        await recordToolCall(db, workflowId, turn, turnEvent.id, call, response.meta, {
+          refused: "recommendation_limit",
+          limit: budget.maxRecommendations,
+        });
+        continue;
+      }
 
       const tool = lookupTool("investigator", call.name);
       if (!tool) {

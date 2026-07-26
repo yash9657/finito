@@ -83,6 +83,8 @@ import { runInvestigation, clampBudget, BUDGET_CEILINGS } from "@/lib/harness/ag
 import { loadFixtureDatasets, makeFakeDb, FIXTURE_WORKFLOW_ID } from "@/lib/harness/agent/fixtures";
 
 const datasets = loadFixtureDatasets(["erp_export", "bank_statement"]);
+/** The whole demo set, for the recommendation-cap test — it needs real invoices and POs. */
+const fullDatasets = loadFixtureDatasets();
 
 /** A well-formed answer JSON citing two real rows. */
 function answerJson(): string {
@@ -243,6 +245,53 @@ describe("bounds — it always terminates, and always says why (D-G22)", () => {
 
     const outcome = await run({ maxTokens: 12_000 }).promise;
     expect(outcome.reason).toBe("max_tokens");
+  });
+
+  it("caps recommendations for the whole run, not just per turn", async () => {
+    // From a real run: asked "is anything ready for payment?", the agent queued FIFTEEN payment
+    // approvals across three turns. Every one was verified and left pending a human, so the
+    // safety property held — but a queue of fifteen near-identical approvals is how reviewers
+    // are trained to rubber-stamp. The prompt asked for restraint and did not get it, so the
+    // bound has to be in the loop.
+    // Real invoice rows, so each call genuinely queues — the cap counts SUCCESSFUL queues,
+    // because it exists to protect a reviewer's attention and a rejected proposal never
+    // reaches one.
+    const invoices = fullDatasets.rows.filter((r) => r.dataset === "invoice").slice(0, 8);
+    const base = { actionType: "approve_invoice_payment", summary: "s", rationale: "r" };
+    for (let turn = 0; turn < 4; turn++) {
+      script.push({
+        content: `Queueing ${turn}`,
+        toolCalls: [
+          {
+            id: `c${turn}a`,
+            name: "recommend_action",
+            arguments: { ...base, sourceId: invoices[turn * 2].sourceId },
+          },
+          {
+            id: `c${turn}b`,
+            name: "recommend_action",
+            arguments: { ...base, sourceId: invoices[turn * 2 + 1].sourceId },
+          },
+        ],
+      });
+    }
+    script.push({ content: "done" }, { content: answerJson() });
+
+    const { db, state } = makeFakeDb();
+    await runInvestigation({
+      db,
+      workflowId: FIXTURE_WORKFLOW_ID,
+      orgId: "org-1",
+      question: "Is anything ready for payment?",
+      datasets: fullDatasets,
+      budget: { maxRecommendations: 2, maxTurns: 5 },
+    });
+
+    const refused = state.events.filter(
+      (e) => e.eventType === "tool_called" && e.payload.refused === "recommendation_limit",
+    );
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused[0].payload.limit).toBe(2);
   });
 
   it("caps tool calls per turn and REFUSES the extras rather than dropping them", async () => {
@@ -407,6 +456,7 @@ describe("clampBudget", () => {
   it("clamps to the non-negotiable ceilings", () => {
     const clamped = clampBudget({
       maxTurns: 10_000,
+      maxRecommendations: 100,
       maxTokens: 999_999_999,
       maxWallClockMs: 86_400_000,
       maxToolCallsPerTurn: 100,
