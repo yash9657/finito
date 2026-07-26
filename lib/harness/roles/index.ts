@@ -101,6 +101,35 @@ export const ROLE_SPECS: Record<StepRole, RoleSpec> = {
     // The most severe class among its allowed action types (approve_invoice_payment).
     maxRiskClass: "moves_money",
   },
+  investigator: {
+    id: "investigator",
+    label: "Investigator",
+    produces: "A cited answer to an open-ended question, plus recommendations for a human.",
+    /*
+     * The ONLY role that decides its own sequence of actions (Plan 5, D-G1) — and therefore the
+     * one where this array is doing the most work.
+     *
+     * It is a closed set of two, and both are consequential acts that already have deterministic
+     * verifiers. The agent's read tools are not action types at all: they are gated by
+     * `ROLE_TOOLS` in `lib/harness/agent/tools`, because a read is not a proposal and modelling
+     * it as one would put seven no-op entries in this array and blur exactly the line D-G1 draws.
+     *
+     * So: the agent may LOOK at anything its tools expose, and may PROPOSE only these two — each
+     * of which goes through verifyAction() and the approvals engine before a human ever sees it,
+     * and neither of which the agent can execute.
+     */
+    allowedActionTypes: [BOOK_JOURNAL_ENTRY, APPROVE_INVOICE_PAYMENT],
+    /*
+     * Null, unlike every other role. A read step's synthesized action stands for "this step's own
+     * operation" (D-H8); an investigation's own operation is not a single act and there is no
+     * honest action type for it. The agent loop is a different primitive from executeStep and
+     * emits `agent_turn_started` instead — see lib/harness/agent/loop.ts.
+     */
+    defaultActionType: null,
+    // Bounded by the most severe of its allowed types (approve_invoice_payment). Note this is a
+    // ceiling on what it may PROPOSE — the agent has no execute path at any risk class.
+    maxRiskClass: "moves_money",
+  },
   writer: {
     id: "writer",
     label: "Writer",

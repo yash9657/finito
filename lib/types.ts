@@ -20,6 +20,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 /* Enum vocabularies — string unions AND matching zod enums (single source).  */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The workflow types that have a DAG. This is the key of `workflowDefinitions`, and adding a
+ * value here is a promise that a validated graph exists for it.
+ */
 export const WORKFLOW_TYPES = [
   "reconciliation",
   "ap_matching",
@@ -27,6 +31,28 @@ export const WORKFLOW_TYPES = [
 ] as const;
 export type WorkflowType = (typeof WORKFLOW_TYPES)[number];
 export const workflowTypeEnum = z.enum(WORKFLOW_TYPES);
+
+/**
+ * An investigation (Plan 5, D-G3) — a `workflows` row driven by the agent loop rather than a DAG.
+ *
+ * It lives in `workflows` so `harness_events`' foreign key, the org-scoped SELECT policy, the
+ * Realtime publication, the cascade delete and the audit certificate all apply to it unchanged;
+ * a separate table would have meant duplicating all five.
+ *
+ * It is deliberately NOT a member of `WORKFLOW_TYPES`, because that union is the key of
+ * `workflowDefinitions` and there is no fourth DAG. Splitting the vocabulary keeps
+ * "every WorkflowType has a graph" true rather than making it a convention.
+ */
+export const INVESTIGATION_TYPE = "investigation" as const;
+
+/** Everything `workflows.type` may hold — the DB check constraint's vocabulary (migration 007). */
+export const WORKFLOW_ROW_TYPES = [...WORKFLOW_TYPES, INVESTIGATION_TYPE] as const;
+export type WorkflowRowType = (typeof WORKFLOW_ROW_TYPES)[number];
+
+/** Narrowing guard: does this row have a DAG the orchestrator can run? */
+export function isPipelineType(type: WorkflowRowType): type is WorkflowType {
+  return type !== INVESTIGATION_TYPE;
+}
 
 export const WORKFLOW_STATUSES = [
   "idle",
@@ -415,7 +441,8 @@ export interface Workflow {
   org_id: string;
   created_by: string | null;
   name: string;
-  type: WorkflowType;
+  /** Widened by Plan 5 (D-G3): an investigation is a workflow row without a DAG. */
+  type: WorkflowRowType;
   status: WorkflowStatus;
   error_message: string | null;
   created_at: string;
@@ -483,8 +510,21 @@ export const PROVIDER_IDS = [
 export type ProviderIdValue = (typeof PROVIDER_IDS)[number];
 export const providerIdEnum = z.enum(PROVIDER_IDS);
 
-/** Role each step declares (D-P8). Informational grouping; resolution is by step_key. */
-export const STEP_ROLES = ["parser", "matcher", "classifier", "writer"] as const;
+/**
+ * The agent roles (D-P8; constrained as a closed action-type set by Plan 4, D-H15).
+ *
+ * `investigator` is the fifth, added by Plan 5 (D-G2). It is here rather than in a parallel
+ * vocabulary because that is what makes per-role model assignment work for the agent for free —
+ * an org points `investigator` at DeepSeek or its own Ollama box in Settings and resolution
+ * tier 2 (`org_role_configs`) does the rest, with no agent-specific plumbing.
+ */
+export const STEP_ROLES = [
+  "parser",
+  "matcher",
+  "classifier",
+  "writer",
+  "investigator",
+] as const;
 export type StepRole = (typeof STEP_ROLES)[number];
 
 /** org_model_configs row (§3). `api_key_ciphertext` is NEVER exposed to the browser (D-P3). */
@@ -643,6 +683,23 @@ export const HARNESS_EVENT_TYPES = [
   "human_decision",
   "workflow_paused",
   "workflow_resumed",
+  /*
+   * Plan 5 — the agent loop (D-G11). Six from the brief, plus two that exist for the same reason
+   * `action_failed_verification` does: a trail that can only record the happy path proves nothing.
+   *
+   *   context_compacted      — compaction silently dropping a finding is precisely the failure
+   *                            the trail exists to expose.
+   *   provider_state_dropped — moving an investigation between providers discards the previous
+   *                            one's opaque reasoning state. We drop it and say so (D-G13).
+   */
+  "agent_turn_started",
+  "agent_reasoning",
+  "tool_called",
+  "tool_returned",
+  "agent_answered",
+  "agent_terminated",
+  "context_compacted",
+  "provider_state_dropped",
 ] as const;
 export type HarnessEventType = (typeof HARNESS_EVENT_TYPES)[number];
 export const harnessEventTypeEnum = z.enum(HARNESS_EVENT_TYPES);
@@ -669,7 +726,107 @@ export interface HarnessEvent {
   provider_used: string | null;
   model_used: string | null;
   input_hash: string | null;
+  /**
+   * The event that caused this one (Plan 5, D-G9) — OpenHands' `cause` linkage. A `tool_returned`
+   * points at its `tool_called`. Ordering alone cannot express that when a turn issues several
+   * tool calls in parallel.
+   */
+  caused_by: string | null;
+  /** Which iteration of the agent loop this belongs to. Null for pipeline events (D-G10). */
+  turn_number: number | null;
   created_at: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Plan 5 — the investigator agent (§7, D-G4/D-G14/D-G22).                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The bounds an investigation runs under (D-G22). Org-configurable, but every field is clamped
+ * to a non-negotiable ceiling before the loop sees it — see `clampBudget`. An open-ended loop on
+ * a metered API is a cost incident waiting to happen, and "the operator can raise it" is not a
+ * bound.
+ */
+export interface InvestigationBudget {
+  maxTurns: number;
+  maxTokens: number;
+  maxWallClockMs: number;
+  maxToolCallsPerTurn: number;
+}
+
+/**
+ * Why the loop stopped. Every value except `answered` produces a PARTIAL answer that says it is
+ * partial — a silent stop is the failure mode the bounds exist to prevent.
+ */
+export const TERMINATION_REASONS = [
+  "answered",
+  "max_turns",
+  "max_tokens",
+  "max_wall_clock",
+  "loop_detected",
+  "no_tool_support",
+  "provider_error",
+  "error",
+] as const;
+export type TerminationReason = (typeof TERMINATION_REASONS)[number];
+
+/**
+ * One figure in a cited answer.
+ *
+ * The agent supplies the label, the source ids and the operation; **it does not supply the
+ * value** (D-G1/D-G14). `valueCents` is computed in TypeScript from the cited rows and
+ * substituted into the prose in place of `{{ref}}`. That is what makes "every number is
+ * recomputed in code" a checkable property rather than a claim.
+ */
+export const FIGURE_OPERATIONS = ["sum", "count", "difference", "average"] as const;
+export type FigureOperation = (typeof FIGURE_OPERATIONS)[number];
+
+export interface AnswerFigure {
+  /** The placeholder token used in the prose, e.g. `total_unmatched`. */
+  ref: string;
+  label: string;
+  operation: FigureOperation;
+  /** Source ids the figure is computed over. Validated to resolve to real rows. */
+  sourceIds: string[];
+  /** Filled in by code after recomputation. Never read from the model. */
+  valueCents?: number;
+  /** For `count`, the figure is unitless. */
+  value?: number;
+}
+
+export interface AnswerCitation {
+  sourceId: string;
+  note: string;
+}
+
+/** The final, validated answer stored on `investigations.answer`. */
+export interface InvestigationAnswer {
+  /** Prose with every `{{ref}}` already replaced by a code-computed figure. */
+  prose: string;
+  /** The prose as the model wrote it, placeholders intact — kept so the trail can show both. */
+  proseTemplate: string;
+  findings: { statement: string; sourceIds: string[] }[];
+  figures: AnswerFigure[];
+  citations: AnswerCitation[];
+  /** True when the loop terminated on a bound rather than by answering. */
+  partial: boolean;
+}
+
+/** An `investigations` row (migration 007). A projection of the stream, never an authority. */
+export interface Investigation {
+  workflow_id: string;
+  org_id: string;
+  question: string;
+  status: "running" | "answered" | "terminated" | "failed";
+  budget: InvestigationBudget;
+  answer: InvestigationAnswer | null;
+  termination_reason: TerminationReason | null;
+  turns_used: number;
+  tokens_in: number;
+  tokens_out: number;
+  created_by: string | null;
+  created_at: string;
+  completed_at: string | null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -682,7 +839,7 @@ export interface HarnessEvent {
 export interface WorkflowRow {
   id: string;
   name: string;
-  type: WorkflowType;
+  type: WorkflowRowType;
   status: WorkflowStatus;
   error_message: string | null;
   created_at: string;

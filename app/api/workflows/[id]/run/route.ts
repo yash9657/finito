@@ -6,7 +6,7 @@ import { runWorkflow } from "@/lib/agents/orchestrator";
 import { resolveProvider, NoProviderConfiguredError } from "@/lib/llm/router";
 import { pendingActions } from "@/lib/approvals/service";
 import { workflowDefinitions } from "@/lib/agents/dag";
-import type { FileType, WorkflowType } from "@/lib/types";
+import { isPipelineType, type FileType, type WorkflowType } from "@/lib/types";
 
 // Long-running background execution kicked off via waitUntil (D2).
 export const maxDuration = 300;
@@ -59,8 +59,19 @@ export async function POST(
     }
   }
 
+  // An investigation is a workflow row without a DAG (Plan 5, D-G3). It has no required files,
+  // no step graph and no orchestrator; it is driven by the agent loop through its own route. Say
+  // so explicitly rather than indexing `workflowDefinitions` with a key it does not have.
+  if (!isPipelineType(workflow.type)) {
+    return jsonError(
+      "This is an investigation, not a pipeline workflow — run it from /api/investigations/[id]/run.",
+      400,
+    );
+  }
+  const pipelineType = workflow.type;
+
   // All required files must be present for this workflow type.
-  const required = REQUIRED_FILES[workflow.type];
+  const required = REQUIRED_FILES[pipelineType];
   const { data: files, error: filesError } = await admin
     .from("workflow_files")
     .select("file_type")
@@ -78,13 +89,13 @@ export async function POST(
 
   // Fail fast (D-P4): the org must resolve a provider for every LLM step before we flip
   // to running, so a misconfigured org gets a clear 400 up front instead of a paused run.
-  const def = workflowDefinitions[workflow.type];
+  const def = workflowDefinitions[pipelineType];
   try {
     for (const step of def.steps) {
       if (step.kind !== "llm") continue;
       await resolveProvider(admin, {
         orgId: profile.org_id,
-        workflowType: workflow.type,
+        workflowType: pipelineType,
         stepKey: step.key,
       });
     }

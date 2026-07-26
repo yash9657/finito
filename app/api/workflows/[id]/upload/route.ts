@@ -1,7 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { requireWorkflowAccess, jsonError } from "@/lib/api/guard";
 import { writeAudit, sha256Bytes } from "@/lib/audit";
-import { FILE_TYPES, type FileType, type WorkflowType, type WorkflowFile } from "@/lib/types";
+import {
+  FILE_TYPES,
+  isPipelineType,
+  type FileType,
+  type WorkflowType,
+  type WorkflowFile,
+} from "@/lib/types";
 
 /**
  * POST /api/workflows/[id]/upload — multipart CSV/Excel upload (§10, §4).
@@ -82,6 +88,11 @@ export async function POST(
     return jsonError("Unknown fileType", 400);
   }
   const fileType = fileTypeRaw as FileType;
+  // An investigation reads the org's existing datasets rather than taking uploads of its own
+  // (Plan 5, D-G3/D-G19), so there is no legal file type for one.
+  if (!isPipelineType(workflow.type)) {
+    return jsonError("An investigation does not take file uploads.", 400);
+  }
   if (!LEGAL_FILE_TYPES[workflow.type].includes(fileType)) {
     return jsonError(`fileType '${fileType}' is not valid for ${workflow.type}`, 400);
   }

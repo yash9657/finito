@@ -48,6 +48,14 @@ export interface AppendEventArgs {
   inputHash?: string | null;
   /** Convenience: hash this value into `input_hash` (canonical, key-sorted). */
   inputForHash?: unknown;
+  /**
+   * The id of the event that caused this one (Plan 5, D-G9). A `tool_returned` cites its
+   * `tool_called`. The DB rejects a cause belonging to a different workflow, so a mis-threaded
+   * trail fails loudly instead of quietly pointing somewhere else.
+   */
+  causedBy?: string | null;
+  /** Which agent-loop iteration this belongs to; null for pipeline events (D-G10). */
+  turnNumber?: number | null;
 }
 
 /**
@@ -78,6 +86,8 @@ export async function appendEvent(
       p_provider_used: args.providerUsed ?? null,
       p_model_used: args.modelUsed ?? null,
       p_input_hash: inputHash,
+      p_caused_by: args.causedBy ?? null,
+      p_turn_number: args.turnNumber ?? null,
     })
     .single<HarnessEvent>();
 

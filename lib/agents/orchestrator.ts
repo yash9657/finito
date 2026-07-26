@@ -27,6 +27,7 @@ import { resolveProvider, invoke, NoProviderConfiguredError } from "@/lib/llm/ro
 import { workflowDefinitions } from "@/lib/agents/dag";
 import { requiresAuthorization } from "@/lib/approvals/risk";
 import { decisionMap, gateStepActions, markCommitted } from "@/lib/approvals/service";
+import { isPipelineType } from "@/lib/types";
 import type {
   ActionRequest,
   DagStepDefinition,
@@ -37,6 +38,7 @@ import type {
   Workflow,
   WorkflowFile,
   WorkflowStep,
+  WorkflowType,
 } from "@/lib/types";
 
 const STORAGE_BUCKET = "workflow-files";
@@ -57,9 +59,21 @@ export async function runWorkflow(workflowId: string): Promise<void> {
     const workflow = await loadWorkflow(db, workflowId);
     if (!workflow) return; // no row to mark
 
-    const def = workflowDefinitions[workflow.type];
+    // An investigation has no DAG (Plan 5, D-G3) and must never reach the pipeline runner. The
+    // API route rejects it first; this is the backstop for any other caller.
+    if (!isPipelineType(workflow.type)) {
+      await markWorkflowError(
+        db,
+        workflowId,
+        `"${workflow.type}" is not a pipeline workflow — it is driven by the agent loop`,
+      );
+      return;
+    }
+    const workflowType = workflow.type;
+
+    const def = workflowDefinitions[workflowType];
     if (!def || def.steps.length === 0) {
-      await markWorkflowError(db, workflowId, `No steps registered for type "${workflow.type}"`);
+      await markWorkflowError(db, workflowId, `No steps registered for type "${workflowType}"`);
       return;
     }
     const defs = def.steps;
@@ -150,7 +164,10 @@ async function executeStep(
   db: SupabaseAdmin,
   workflowId: string,
   orgId: string,
-  workflowType: Workflow["type"],
+  // Narrowed from `Workflow["type"]`, which Plan 5 widened to include `investigation` (D-G3).
+  // `runWorkflow` proves the narrowing before it gets here; the router's step-config tier is
+  // keyed by (workflow_type, step_key) and an investigation has no step keys.
+  workflowType: WorkflowType,
   def: DagStepDefinition,
   files: Record<string, ParsedFile>,
   priorOutputs: Record<string, unknown>,
