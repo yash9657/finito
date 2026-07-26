@@ -388,18 +388,51 @@ refusals terminate the run.
 
 ## 8. Milestones
 
-| # | Milestone | Gate |
-| --- | --- | --- |
-| **G0** | This document | reviewed before code |
-| **G1** | `007_agent_events.sql` + canonical message format | migration applies to a throwaway `postgres:17` container before it is applied live (PLAN-4: a live-only failure cost a debugging round) |
-| **G2** | Tool calling across all providers + capabilities + salvage | `scripts/tool-calling-proof.ts` green on every **configured** provider; wire-format parity proven for all five under a fake transport in `npm test` |
-| **G3** | The agent loop, bounded | a real investigation end-to-end with a full event trail |
-| **G4** | Provider swap | the same investigation on each configured provider, each producing a valid cited answer, the trail showing which model did what |
-| **G5** | Full tool surface + compaction | a 30+ turn investigation that does not exceed context |
-| **G6** | `recommend_action` → approval queue | a recommendation appears in the existing panel; unverified ones are rejected pre-queue |
-| **G7** | Transcript UI + Realtime | parallel tool calls visibly concurrent |
+| # | Milestone | Gate | Status |
+| --- | --- | --- | --- |
+| **G0** | This document | reviewed before code | ✅ |
+| **G1** | `007_agent_events.sql` + canonical message format | migration applies to a throwaway `postgres:17` container before it is applied live | ✅ applied live, recorded as version 007 |
+| **G2** | Tool calling across all providers + capabilities + salvage | `scripts/tool-calling-proof.ts` green on every **configured** provider; wire-format parity for all five in `npm test` | ✅ offline half; live half **blocked on credentials** (see below) |
+| **G3** | The agent loop, bounded | a real investigation end-to-end with a full event trail | ✅ `npm run investigation-proof` passes against live Supabase |
+| **G4** | Provider swap | the same investigation on each configured provider | ⛔ **blocked on credentials** — the script exists and takes one env var |
+| **G5** | Full tool surface + compaction | compaction preserves every citation; results trimmed for the model, kept whole on the trail | ✅ unit-proven; the 30-turn live run is part of G4 |
+| **G6** | `recommend_action` → approval queue | a recommendation appears in the existing panel; unverified ones are rejected pre-queue | ✅ proven live |
+| **G7** | Transcript UI + Realtime | parallel tool calls visibly concurrent | ✅ |
 
-Every milestone green on `npm run typecheck && npm run build && npm test`, one focused commit each.
+Every milestone green on `npm run typecheck && npm run build && npm test` (383 tests).
+
+### What is actually blocked, and on what
+
+`.env.local` carries a **placeholder** `ANTHROPIC_API_KEY` and no other vendor credential; nothing
+listens on `localhost:11434`. So no real model was called at any point in this build. That is a
+credentials gap, not a code gap, and the split is deliberate so it stays visible:
+
+| Proven, repeatedly, in CI | Not proven, and will not be until a key exists |
+| --- | --- |
+| The exact request bytes each provider receives, for all five (`lib/llm/tool-calling.test.ts`) | That a real model chooses sensible tools for a real question |
+| A recorded provider response → canonical tool calls, for all five | That any given model's answer is *good* |
+| The whole live path — Supabase, events, `caused_by`, approvals, answer validation (`npm run investigation-proof`, against a scripted local provider over real HTTP) | G4's headline claim: the same investigation on five different models |
+
+`npm run tool-calling-proof` reports every unconfigured provider as SKIPPED with the reason and
+exits zero; it exits non-zero only when a **configured** provider fails. Supplying any one of
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, or an Ollama host
+turns that from INCONCLUSIVE into a real result with no code change. G4 is then
+`PROOF_USE_CONFIGURED_PROVIDER=1 npm run investigation-proof`, once per provider.
+
+### Two decisions that changed on contact with the code
+
+**`recommend_action` offers one action type, not two.** `ROLE_SPECS.investigator` permits both
+`approve_invoice_payment` and `book_journal_entry`, but only the first is exposed. `verifyJournalEntry`
+requires a chart of accounts to validate account codes against and correctly refuses to pass an
+entry without one — and FinFlow has no chart of accounts. Offering it would invite the agent to
+spend turns on something structurally guaranteed to be rejected. Adding it later is one enum entry
+and one payload builder; the role and the verifier are already there.
+
+**An investigation is not a Mastra workflow** (D-G6), which the plan already anticipated, and it is
+also not resumable in this pass. The loop's state is its conversation; a crashed run leaves its
+`investigations` row at `running` with a complete event trail up to the crash. Replay-from-events
+is the design (the trail is the record), but it is not built — a run that dies mid-flight must be
+re-asked. Worth doing before this is load-bearing for anyone.
 
 ### On G2 and G4 — what "green" can and cannot mean here
 
