@@ -10,15 +10,17 @@ import type { StepRow } from "@/lib/types";
  */
 export function LiveWorkflowView({ steps }: { steps: StepRow[] }) {
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex min-w-0 flex-col">
       <div className="border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">Execution trace</h2>
-        <p className="text-xs text-muted">
+        <h2 className="text-sm font-semibold text-foreground">
+          Workflow activity
+        </h2>
+        <p className="mt-1 text-sm text-muted">
           {steps.length} {steps.length === 1 ? "step" : "steps"}
         </p>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="min-w-0 flex-1 p-4">
         {steps.length === 0 ? (
           <p className="text-sm text-muted">No steps yet.</p>
         ) : (

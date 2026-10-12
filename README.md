@@ -1,20 +1,20 @@
 # FinFlow
 
-Multi-agent finance automation — reconciliation, AP invoice matching, and FP&A
-variance commentary. Upload your ledgers, watch a team of Claude agents work the
-data live, approve at a human review gate, and export an auditable report.
+Finance workflows for reconciliation, invoice review, variance analysis, and conversations over uploaded data. The chat agent can inspect unfamiliar structures, write and revise isolated JavaScript calculations, and attach methods and source evidence. People review consequential actions and reports.
+
+**Deployment status:** strengthened pilot software, not established enterprise readiness. Read [production readiness](./docs/PRODUCTION_READINESS.md) before onboarding an organization.
 
 Built with Next.js 15 (App Router), React 19, Tailwind v4 (dark-only), Supabase
-(Postgres + Auth + Storage), and the Anthropic TypeScript SDK. See
+(Postgres + Auth + Storage), and a provider-neutral model layer with native Fireworks support. See
 [`PLAN.md`](./PLAN.md) for the full product/architecture spec.
 
 ---
 
 ## 1. Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (required by the PDF reader)
 - A [Supabase](https://supabase.com) project (Postgres + Auth + Storage)
-- An [Anthropic API key](https://console.anthropic.com)
+- A [Fireworks API key](https://fireworks.ai), or a supported alternative provider
 
 ## 2. Environment variables (§2)
 
@@ -30,7 +30,11 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=   # Supabase anon/public key (browser auth)
 SUPABASE_SERVICE_ROLE_KEY=       # server-only; never expose to the client
 LLM_KEY_ENCRYPTION_SECRET=       # required to SAVE provider API keys (AES-256-GCM, D-P2)
 LLM_BLOCK_PRIVATE_URLS=          # OPTIONAL SSRF guard for custom base_urls (D-P13)
-ANTHROPIC_API_KEY=               # OPTIONAL self-host/dev fallback (D-P4)
+FIREWORKS_API_KEY=               # server-only open-weight model access
+FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4p1-flash
+FIREWORKS_INVESTIGATOR_MODEL=accounts/fireworks/models/deepseek-v4p1-flash
+LLM_ENV_ORG_ID=                  # required in production to scope env credentials
+ANTHROPIC_API_KEY=               # optional fallback if Fireworks is absent
 ```
 
 `.env.local` is gitignored. The two `NEXT_PUBLIC_*` values are safe in the
@@ -46,15 +50,13 @@ orchestrator) and must never be sent to the client.
   hosts at config-save time, but **only** when `NODE_ENV=production` (D-P13).
   Default off, so self-hosters can point at `http://localhost:11434` (Ollama) or a
   VPC endpoint.
-- **`ANTHROPIC_API_KEY`** — optional. When an org has **zero** active model configs,
-  the router treats this key as an implicit Anthropic config
-  (`default_model = claude-sonnet-4-6`), so `next dev` demos work with nothing but
-  this env var (D-P4). On a shared/public deployment, prefer real org configs under
-  Settings → Models instead.
+- **Fireworks setup:** run `python3 scripts/configure-fireworks.py`. Paste the key at the hidden prompt; it is saved to `.env.local` with owner-only permissions. Restart the server if it was already running. Never put the key in a `NEXT_PUBLIC_` variable.
+- **Environment credential scope:** `LLM_ENV_ORG_ID` must equal the workspace UUID in production. Without it the server refuses environment fallback. Per-organization provider configurations take priority; an existing Anthropic pin/default is not silently migrated by adding a Fireworks key. Set Fireworks as default and review step/role assignments under Models & usage.
+- **Provider smoke proof:** `npx tsx scripts/fireworks-proof.ts` uses synthetic data to test schema output, native tool calls, and a complete tool-result round trip. It uses a small amount of billed inference. This checks API compatibility, not financial reasoning accuracy.
 
 ## 3. Apply the database schema
 
-The schema lives in three migrations, applied **in order**:
+Apply all migration files **001 through 018 in order**. For an existing installation apply only unapplied versions. The first three establish the baseline:
 
 1. [`001_init.sql`](./supabase/migrations/001_init.sql) — tables, RLS policies, the
    `profiles` auto-provision trigger, the seeded "Demo Org", and the private
@@ -66,7 +68,13 @@ The schema lives in three migrations, applied **in order**:
    layer: `org_approval_policies`, `approval_rules`, `action_requests`, and the
    `awaiting_approval` status values.
 
-Any of these:
+Migrations 004–007 add harness events, role routing, client grant restrictions, and investigations. Migration 008 adds Fireworks, tenant-bound model pins, and private workspaces for new signups. Migration 009 introduces atomic input replacement. Migration 010 introduces atomic final review decisions. Existing Demo Org memberships require operator review; migration 008 intentionally does not reassign them. Before 009, inspect duplicate `(workflow_id, file_type)` rows and resolve them against source evidence; it fails rather than deleting data automatically.
+
+Migrations 011–012 add immutable analysis sources and conversation continuations. Migrations 013–017 add scoped memory indexes, historical workflow discovery, a private interaction ledger, contextual row search and per-file result diversity. Migration 018 makes filename components searchable while preserving exact filenames and original row citations.
+
+Apply migrations before deploying the routes that call the new RPCs. Test against staging first and keep a database backup. Deployment options:
+
+Migrations 011–012 add private general-purpose sources and linked conversations. Migration 013 adds indexed workspace history and private user preferences. Keep original source objects with their database metadata: history search cannot restore a deleted source.
 
 - **CI (default).** [`.github/workflows/supabase-migrations.yml`](./.github/workflows/supabase-migrations.yml)
   runs `supabase db push` on every merge to `main` that touches `supabase/`. It needs two
@@ -102,7 +110,7 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>. Sign up (a profile is auto-created in the Demo Org),
+Open <http://localhost:3000>. Sign up (a private workspace is created for the new user),
 then **configure an LLM provider first** under **Settings → Models → Add provider**
 (pick a provider, paste a key or set a base URL, "Test connection", Save; tick
 "Set as organization default"). For a zero-config dev run you can instead just set
@@ -113,7 +121,19 @@ Then: **Dashboard → New workflow → pick a type → upload files → Run**. T
 view polls every 2s while the agents work. An AP run stops at the **Authorization**
 panel to have each payable invoice decided (see "Per-action authorization" below) and
 resumes itself once they are; then approve at the review gate to unlock the report +
-audit certificate (Print / Save as PDF from there, or download the XLSX).
+audit record (Print / Save as PDF from there, or download the XLSX).
+
+## Ask your data
+
+Upload general files under **Your data**, inspect the parsed sheets and original rows, then start a conversation under **Ask your data**. Supported containers are CSV/TSV and other delimited text, XLS/XLSX, JSON/JSONL, TXT/Markdown, and PDFs containing embedded text. An unfamiliar column layout does not require a new hardcoded workflow. The agent can inspect, search, join and calculate with bounded JavaScript in a QuickJS WASM worker. It cannot install packages, access the host shell, browse the network, or OCR scanned documents.
+
+Inputs retain immutable hashes, sheet names, preambles, header positions and row citations. Analysis artifacts include the generated code, code hash, selected input ranges and output. Exact decimal helpers avoid binary floating-point arithmetic; correctly executing generated code does not independently prove its accounting interpretation. The UI distinguishes analysis output from recomputed source figures.
+
+Limits are explicit: 20 MiB per file; 10 selected files and 40 MiB combined; 20,000 rows and 500,000 cells per loaded analysis; 32 tables; 200 PDF pages. Generated computations accept 4 MiB of selected input and emit at most 24 KiB. Oversized inputs fail with guidance instead of silently analyzing a subset. Spreadsheet formulas use cached values and imported dates retain source representation. Header overrides are available on upload.
+
+**Efficient recall:** the archive and model context are separate. Automatic memory is capped at 3,000 UTF-8 bytes; the agent retrieves short relevant excerpts and opens original evidence on demand. Indexed row search includes file/sheet/column context and limits repeated hits from one file. Private activity records cover committed app actions and best-effort authenticated page visits; drafts, passwords and keystrokes are excluded. Retrieval is lexical, not guaranteed semantic matching.
+
+**Settings → Memory & history** controls personal preferences and automatic recall. Workspace questions, answers and uploaded files remain shared within the organization; personal preferences belong to their author. Historical answers are context, not financial truth: the agent must reload available sources before presenting fresh verified figures. Deleting a file removes future source access; previous answers and audit records can still retain excerpts. Full retention and erasure policies remain a deployment requirement.
 
 > If no provider resolves for the org, the wizard's **Launch** and the error
 > banner's **Re-run** surface the run route's inline "No LLM provider configured"
@@ -193,16 +213,16 @@ this vendor under $X, always ask for new payees".
 Every organization configures its **own** LLM provider(s), key(s), and per-step
 model choices. Agent steps never touch a provider SDK — they call a role- and
 org-aware **router** (`lib/llm/router.ts`), so the same workflow can run on
-Anthropic, OpenAI, Google Gemini, Ollama, or any OpenAI-compatible endpoint.
+Fireworks, Anthropic, OpenAI, Google Gemini, Ollama, or an OpenAI-compatible endpoint.
 
 **Provider resolution order (D-P7).** For each LLM step, given
 `(org_id, workflow_type, step_key)`:
 
-1. A per-step pin in `workflow_step_configs` (if the assigned config is active).
-2. Else the org's active default config (`org_model_configs.is_default`).
-3. Else the env-var implicit Anthropic config — `ANTHROPIC_API_KEY` with
-   `default_model = claude-sonnet-4-6` (D-P4), for `next dev` / self-host.
-4. Else the run route fails fast with `400 "No LLM provider configured"`.
+1. An active per-step pin in `workflow_step_configs`.
+2. An active role pin in `org_role_configs` (when the step declares a role).
+3. The organization’s active default provider.
+4. Fireworks environment configuration, then Anthropic, only when environment scope permits that organization.
+5. Otherwise fail closed with a configuration error. Database errors never trigger an environment credential fallback.
 
 Pin a step to a specific model by creating a config with that `default_model` and
 assigning the step to it under **Settings → Models → Per-step model assignment**
@@ -257,8 +277,7 @@ reverse proxy inside the customer network exposed via the `custom` provider's
   the **ready set** (steps whose `dependsOn` are all `complete`) concurrently, retries
   a failing step up to 3× (1s/4s backoff), and on final failure pauses the workflow —
   in-flight siblings still persist. Re-POSTing `/run` on an `error` workflow resets
-  errored steps to `pending` and resumes; `complete` steps never re-run. A step stuck
-  `running` > 3 min is treated as crashed.
+  errored steps to `pending` and resumes; `complete` steps never re-run. Status polling is read-only: it cannot safely infer a dead worker. Durable queue delivery, worker leases, fencing, and abandoned-run recovery remain deployment blockers.
 - **D-A3 / D-A10 — Authorization is a gate inside the orchestrator, and suspension is not
   failure.** A step whose risk class requires authorization proposes its actions, they are
   evaluated + persisted, and the step either suspends (`awaiting_approval`, nothing
@@ -266,14 +285,14 @@ reverse proxy inside the customer network exposed via the `custom` provider's
   authorized. Resume is the same idempotent `runWorkflow`; `action_key` makes re-entry
   duplicate-free. See "Per-action authorization" above and `PLAN-3.md` for D-A1–D-A16.
 - **D3 — Hybrid matching.** Exact-rule matching (equal amounts, date windows,
-  duplicates, variance arithmetic) runs in deterministic TypeScript; Claude is used
+  duplicates, variance arithmetic) runs in deterministic TypeScript; The configured model is used
   only for judgment (fuzzy adjudication, classification) and language (explanations,
   commentary). Every number in the report is recomputed in code from the matched
-  sets and every ID Claude returns is validated against the real dataset.
+  sets and every ID the model returns is validated against the real dataset.
 - **D4 / D-P1 — Provider-agnostic structured outputs.** Steps call `ctx.llm({system,
   user, schema})`; the router resolves the org's provider, requests JSON via each
-  provider's strongest native mechanism (D-P9 — Anthropic `output_config`, OpenAI
-  strict `json_schema`, Gemini `responseSchema`, Ollama/custom `json` + schema-in-prompt),
+  provider's strongest native mechanism (D-P9 — Anthropic `output_config`, OpenAI/Fireworks
+  `json_schema`, Gemini `responseSchema`, Ollama/custom `json` + schema-in-prompt),
   then validates with Zod and retries once with the error appended. Transport is
   HTTP-first (`fetch`); only Anthropic keeps its SDK (D-P10).
 - **D5 — Two Supabase clients only.** `lib/supabase/server.ts` (cookie-scoped
@@ -311,3 +330,9 @@ lib/approvals/                  risk taxonomy, permission engine, service, actio
 lib/supabase/                   server + admin + middleware clients
 lib/{types,format,audit,csv,excel}
 ```
+
+### Live adaptive-memory acceptance proof
+
+With the local app running and Fireworks configured, run `node scripts/adaptive-memory-proof.mjs`. It creates a disposable workspace, uploads synthetic unfamiliar files, checks a multi-step calculation and follow-up, and exercises recall against records explicitly dated five months earlier. It reopens originals and recomputes results; it does not wait five months or test customer data. The script incurs inference usage and cleans up its synthetic records.
+
+`FINFLOW_EVAL_MODE=history` seeds a labeled prior question and runs only the historical-recall proof. `FINFLOW_EVAL_SCREENSHOTS=1` adds responsive browser checks. Output reports provider token totals, cached input when reported, elapsed time and the bounded initial-memory allocation. These are acceptance checks, not an enterprise accuracy or latency benchmark.

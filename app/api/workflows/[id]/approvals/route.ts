@@ -192,13 +192,16 @@ export async function POST(
   const remaining = (await listActions(admin, id)).filter((a) => a.status === "pending");
   let resumed = false;
   if (remaining.length === 0 && workflow.status === "awaiting_approval") {
-    const { error } = await admin
+    const { data: claimed, error } = await admin
       .from("workflows")
       .update({ status: "running", error_message: null })
       .eq("id", id)
-      .eq("status", "awaiting_approval"); // only the responder that finds it suspended resumes it
+      .eq("status", "awaiting_approval")
+      .select("id")
+      .maybeSingle(); // only the winner resumes
     if (error) return jsonError(`Failed to resume workflow: ${error.message}`, 500);
 
+    if (claimed) {
     await writeAudit(admin, {
       workflowId: id,
       actorType: "human",
@@ -207,15 +210,15 @@ export async function POST(
       detail: { from_status: "awaiting_approval", resolved: resolved.length },
     });
 
+    const task = runWorkflow(id).catch((err: unknown) => {
+      console.error("[approvals] background workflow failed", err instanceof Error ? err.name : "UnknownError");
+    });
     try {
       const { waitUntil } = await import("@vercel/functions");
-      waitUntil(runWorkflow(id));
-    } catch {
-      void runWorkflow(id).catch((err: unknown) => {
-        console.error(`[approvals] background runWorkflow(${id}) failed:`, err);
-      });
-    }
+      waitUntil(task);
+    } catch { void task; }
     resumed = true;
+    }
   }
 
   return NextResponse.json({

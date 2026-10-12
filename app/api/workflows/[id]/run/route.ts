@@ -97,6 +97,7 @@ export async function POST(
         orgId: profile.org_id,
         workflowType: pipelineType,
         stepKey: step.key,
+        role: step.role,
       });
     }
   } catch (err) {
@@ -109,18 +110,23 @@ export async function POST(
   // Mark running + record launch time. Clear any prior error_message from a failed run.
   // A resume keeps the original `started_at` so the audit certificate reports when the
   // run actually launched, not when it was last resumed.
-  const { error: updateError } = await admin
+  const { data: claimed, error: updateError } = await admin
     .from("workflows")
     .update({
       status: "running",
       started_at: workflow.started_at ?? new Date().toISOString(),
       error_message: null,
     })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("status", workflow.status)
+    .select("id")
+    .maybeSingle();
 
   if (updateError) {
     return jsonError(`Failed to launch workflow: ${updateError.message}`, 500);
   }
+
+  if (!claimed) return jsonError("This workflow was already started by another request. Refresh to see its status.", 409);
 
   await writeAudit(admin, {
     workflowId: id,
@@ -133,13 +139,15 @@ export async function POST(
 
   // Primary path: run in the background via waitUntil (works under `next dev`, D2/§15).
   // Fallback (§15): if waitUntil is unavailable at runtime, fire-and-catch.
+  const task = runWorkflow(id).catch((err: unknown) => {
+    console.error(`[run] background workflow failed`, err instanceof Error ? err.name : "UnknownError");
+  });
   try {
     const { waitUntil } = await import("@vercel/functions");
-    waitUntil(runWorkflow(id));
+    waitUntil(task);
   } catch {
-    void runWorkflow(id).catch((err: unknown) => {
-      console.error(`[run] background runWorkflow(${id}) failed:`, err);
-    });
+    // The same promise is already running in local development; never launch twice.
+    void task;
   }
 
   return NextResponse.json({ status: "running" }, { status: 202 });

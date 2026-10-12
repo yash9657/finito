@@ -32,8 +32,8 @@ const KEEP_RECENT_MESSAGES = 6;
 /** Characters of a tool result the model sees. The event keeps the whole thing. */
 export const TOOL_RESULT_EXCERPT_CHARS = 6_000;
 
-/** Source ids look like `wf:abc12345/erp_export/erp-001`. */
-const SOURCE_ID_PATTERN = /\bwf:[0-9a-f]{8}\/[a-z_]+\/[A-Za-z0-9-]+/g;
+/** Keep full workflow UUIDs and legacy eight-character IDs citable across compaction. */
+const SOURCE_ID_PATTERN = /\b(?:wf:[0-9a-f]{8}(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\/[a-z_]+\/[A-Za-z0-9_-]+|src:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/t\d+\/r\d+)/gi;
 
 export interface CompactionResult {
   messages: CanonicalMessage[];
@@ -57,7 +57,7 @@ export function trimToolResult(full: string, limit = TOOL_RESULT_EXCERPT_CHARS):
   return (
     `${kept}\n\n[TRUNCATED: showing the first ${limit.toLocaleString()} of ` +
     `${full.length.toLocaleString()} characters. The full result is on the audit trail. Narrow ` +
-    `your filters, or use get_transactions with an offset, to see the rest.]`
+    `your filters, or use get_transactions/read_source_rows with an offset, to see the rest.]`
   );
 }
 
@@ -183,8 +183,12 @@ export async function compact(
     };
   }
 
-  const preservedSourceIds = extractSourceIds(middle);
-  const digest = await summarize(middle);
+  const cleanTail = dropOrphanToolResults(tail);
+  // Orphan results also disappear from the live conversation, so their citations belong in
+  // the digest. Otherwise an unlucky split silently loses the last result of a compacted call.
+  const compactedMessages = [...middle, ...tail.slice(0, tail.length - cleanTail.length)];
+  const preservedSourceIds = extractSourceIds(compactedMessages);
+  const digest = await summarize(compactedMessages);
 
   const digestMessage: CanonicalMessage = {
     role: "user",
@@ -194,13 +198,12 @@ export async function compact(
   // A `tool` message whose matching assistant tool_call was dropped is an orphan every provider
   // rejects. Dropping the whole middle and rebuilding from the digest is what avoids that; the
   // tail is trimmed to start at a clean boundary for the same reason.
-  const cleanTail = dropOrphanToolResults(tail);
   const out = [...head, digestMessage, ...cleanTail];
 
   return {
     messages: out,
     compacted: true,
-    droppedMessages: middle.length,
+    droppedMessages: compactedMessages.length,
     estimatedTokensBefore: before,
     estimatedTokensAfter: estimateTokens(out, systemPrompt),
     preservedSourceIds,

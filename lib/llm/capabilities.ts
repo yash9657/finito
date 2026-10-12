@@ -125,6 +125,11 @@ const OLLAMA: CapabilityEntry[] = [
 ];
 
 const TABLE: Record<ProviderId, CapabilityEntry[]> = {
+  // Conservative execution limits; supported tools verified in Fireworks' catalogue, 2026-10-12.
+  fireworks: [
+    { prefix: "deepseek-v4p1-flash", contextWindow: 128_000, maxOutputTokens: 16_000, toolCalling: true, parallelToolCalls: false, vision: true },
+    { prefix: "kimi-k3", contextWindow: 128_000, maxOutputTokens: 16_000, toolCalling: true, parallelToolCalls: false, vision: true },
+  ],
   anthropic: ANTHROPIC,
   openai: OPENAI,
   google: GOOGLE,
@@ -134,6 +139,7 @@ const TABLE: Record<ProviderId, CapabilityEntry[]> = {
 
 /** The floor used when nothing in the table matches. Small, cautious, tool-calling attempted. */
 const DEFAULTS: Record<ProviderId, Omit<CapabilityEntry, "prefix">> = {
+  fireworks: { contextWindow: 32_768, maxOutputTokens: 4_096, toolCalling: false, parallelToolCalls: false, vision: false },
   anthropic: { contextWindow: 200_000, maxOutputTokens: 8_192, toolCalling: true, parallelToolCalls: true, vision: true },
   openai: { contextWindow: 32_768, maxOutputTokens: 4_096, toolCalling: true, parallelToolCalls: true, vision: false },
   google: { contextWindow: 32_768, maxOutputTokens: 4_096, toolCalling: true, parallelToolCalls: true, vision: false },

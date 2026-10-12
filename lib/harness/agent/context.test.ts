@@ -29,6 +29,11 @@ const EMPTY_DIGEST: ContextDigest = {
   openQuestions: [],
 };
 
+it("preserves exact generic source row references for later final-answer validation", () => {
+  const id = "src:11111111-2222-4333-8444-555555555555/t12/r340";
+  expect(extractSourceIds([userMessage(`Evidence ${id}`)])).toEqual([id]);
+});
+
 function conversation(turns: number): CanonicalMessage[] {
   const out: CanonicalMessage[] = [userMessage("Why doesn't the account tie out?")];
   for (let i = 0; i < turns; i++) {
@@ -96,6 +101,11 @@ describe("extractSourceIds", () => {
     const id = "wf:1a2b3c4d/erp_export/erp-001";
     expect(extractSourceIds([userMessage(`${id} and ${id}`)])).toEqual([id]);
   });
+
+  it("retains the full workflow UUID instead of dropping new source IDs", () => {
+    const id = "wf:1a2b3c4d-abcd-1234-bcde-123456789abc/erp_export/erp_001";
+    expect(extractSourceIds([userMessage(id)])).toEqual([id]);
+  });
 });
 
 describe("compact", () => {
@@ -117,6 +127,20 @@ describe("compact", () => {
     const messages = conversation(20);
     const result = await compact(messages, "sys", async () => EMPTY_DIGEST);
     expect(result.messages[0]).toEqual(messages[0]);
+  });
+
+  it("preserves citations in tool results orphaned at the compaction boundary", async () => {
+    const id = "wf:1a2b3c4d-abcd-1234-bcde-123456789abc/erp_export/erp-001";
+    const messages = [
+      userMessage("Question"),
+      assistantMessage("", [{ id: "boundary-call", name: "query_ledger", arguments: {} }]),
+      toolResultMessage([{ toolCallId: "boundary-call", name: "query_ledger", content: id }]),
+      ...Array.from({ length: 5 }, (_, i) => userMessage(`Later ${i}`)),
+    ];
+    const result = await compact(messages, "sys", async () => EMPTY_DIGEST);
+    expect(result.preservedSourceIds).toContain(id);
+    expect(extractSourceIds(result.messages)).toContain(id);
+    expect(result.messages.some(message => message.role === "tool")).toBe(false);
   });
 
   it("shrinks the estimate and reports what it dropped", async () => {

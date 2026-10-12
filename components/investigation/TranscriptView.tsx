@@ -15,7 +15,7 @@
  *      sequence. That is the whole reason the column exists.
  */
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -47,7 +47,9 @@ function toTurns(events: HarnessEvent[]): Turn[] {
   const byTurn = new Map<number, HarnessEvent[]>();
   for (const event of events) {
     const turn = event.turn_number ?? 0;
-    byTurn.set(turn, [...(byTurn.get(turn) ?? []), event]);
+    const list = byTurn.get(turn);
+    if (list) list.push(event);
+    else byTurn.set(turn, [event]);
   }
   return [...byTurn.entries()]
     .sort(([a], [b]) => a - b)
@@ -59,23 +61,37 @@ function toTurns(events: HarnessEvent[]): Turn[] {
 
 export function TranscriptView({ events, live, subscribed }: Props) {
   const turns = toTurns(events);
+  const returnsByCause = new Map<string, HarnessEvent>();
+  for (const event of events) {
+    if (event.event_type === "tool_returned" && event.caused_by)
+      returnsByCause.set(event.caused_by, event);
+  }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2 text-xs text-muted">
-        <Radio className={cn("h-3.5 w-3.5", subscribed ? "text-accent" : "text-muted")} />
+    <div className="min-w-0 space-y-6">
+      <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
+        <Radio
+          className={cn(
+            "h-3.5 w-3.5",
+            subscribed ? "text-accent" : "text-muted",
+          )}
+        />
         {/* Said out loud rather than left to guess: a transcript that has quietly stopped
             updating looks identical to one whose run has stalled. */}
-        {subscribed
-          ? "Live — streaming events as they happen"
-          : live
-            ? "Reconnecting — falling back to a 10s refresh"
-            : "Complete"}
-        <span className="ml-auto font-mono">{events.length} events</span>
+        {live
+          ? subscribed
+            ? "Live updates connected"
+            : "Reconnecting. Checking for updates every 10 seconds."
+          : "Saved activity record"}
+        <span className="ml-auto shrink-0">{events.length} events</span>
       </div>
 
       {turns.map((turn) => (
-        <TurnBlock key={turn.number} turn={turn} allEvents={events} />
+        <TurnBlock
+          key={turn.number}
+          turn={turn}
+          returnsByCause={returnsByCause}
+        />
       ))}
 
       {live && (
@@ -88,18 +104,17 @@ export function TranscriptView({ events, live, subscribed }: Props) {
   );
 }
 
-function TurnBlock({ turn, allEvents }: { turn: Turn; allEvents: HarnessEvent[] }) {
-  // Pair each tool_returned with the tool_called it cites (D-G9). Ordering alone cannot do this
-  // when a turn issues several calls at once.
-  const returnsByCause = new Map<string, HarnessEvent>();
-  for (const event of allEvents) {
-    if (event.event_type === "tool_returned" && event.caused_by) {
-      returnsByCause.set(event.caused_by, event);
-    }
-  }
-
+function TurnBlock({
+  turn,
+  returnsByCause,
+}: {
+  turn: Turn;
+  returnsByCause: Map<string, HarnessEvent>;
+}) {
   const calls = turn.events.filter((e) => e.event_type === "tool_called");
-  const reasoning = turn.events.filter((e) => e.event_type === "agent_reasoning");
+  const reasoning = turn.events.filter(
+    (e) => e.event_type === "agent_reasoning",
+  );
   const other = turn.events.filter(
     (e) =>
       e.event_type !== "tool_called" &&
@@ -111,31 +126,34 @@ function TurnBlock({ turn, allEvents }: { turn: Turn; allEvents: HarnessEvent[] 
   if (turn.events.length === 0) return null;
 
   return (
-    <div className="rounded-lg border border-border bg-card">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <span className="rounded bg-border px-1.5 py-0.5 font-mono text-xs text-muted">
-          {turn.number === 0 ? "setup" : `turn ${turn.number}`}
+    <div className="min-w-0 border-t border-border">
+      <div className="flex flex-wrap items-center gap-3 py-3">
+        <span className="text-sm font-medium">
+          {turn.number === 0 ? "Preparation" : `Step ${turn.number}`}
         </span>
         {calls.length > 1 && (
-          <span className="flex items-center gap-1 text-xs text-accent">
+          <span className="flex items-center gap-2 text-sm text-muted">
             <Layers className="h-3 w-3" />
-            {calls.length} parallel calls
+            {calls.length} tools used together
           </span>
         )}
-        <span className="ml-auto font-mono text-xs text-muted">
+        <span className="min-w-0 break-all text-sm text-muted sm:ml-auto">
           {providerOf(turn.events) ?? ""}
         </span>
       </div>
 
-      <div className="space-y-3 px-4 py-3">
+      <div className="min-w-0 space-y-3 pb-4">
         {reasoning.map((event) => (
-          <p key={event.id} className="whitespace-pre-wrap text-sm leading-relaxed">
+          <p
+            key={event.id}
+            className="whitespace-pre-wrap break-words text-sm leading-7"
+          >
             {String((event.payload as { text?: string })?.text ?? "")}
           </p>
         ))}
 
         {calls.length > 0 && (
-          <div className={cn("grid gap-2", calls.length > 1 && "md:grid-cols-2")}>
+          <div className="min-w-0 divide-y divide-border">
             {calls.map((call) => (
               <ToolCallCard
                 key={call.id}
@@ -154,8 +172,15 @@ function TurnBlock({ turn, allEvents }: { turn: Turn; allEvents: HarnessEvent[] 
   );
 }
 
-function ToolCallCard({ call, result }: { call: HarnessEvent; result: HarnessEvent | null }) {
+function ToolCallCard({
+  call,
+  result,
+}: {
+  call: HarnessEvent;
+  result: HarnessEvent | null;
+}) {
   const [open, setOpen] = useState(false);
+  const detailId = useId();
   const payload = (call.payload ?? {}) as {
     tool?: string;
     arguments?: Record<string, unknown>;
@@ -175,11 +200,13 @@ function ToolCallCard({ call, result }: { call: HarnessEvent; result: HarnessEve
   const failed = result !== null && resultPayload.ok === false;
 
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-background">
+    <div className="min-w-0">
       <button
         type="button"
+        aria-expanded={open}
+        aria-controls={detailId}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-border/40"
+        className="flex min-h-11 w-full items-start gap-2 rounded-md py-3 text-left transition-colors hover:bg-card"
       >
         {open ? (
           <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted" />
@@ -189,20 +216,24 @@ function ToolCallCard({ call, result }: { call: HarnessEvent; result: HarnessEve
         <Wrench className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted" />
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1.5">
-            <code className="font-mono text-xs font-medium">{payload.tool}</code>
+            <span className="break-words text-sm font-medium">
+              {payload.tool
+                ?.replace(/_/g, " ")
+                .replace(/^./, (c) => c.toUpperCase()) ?? "Tool request"}
+            </span>
             {payload.salvaged && (
               /* Never silent (D-G17): a rising salvage rate is the signal a local model is
                  not fit for purpose, and a user should be able to see it here. */
               <span
-                className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
+                className="rounded bg-warning/10 px-2 py-1 text-sm text-warning"
                 title={`Recovered from malformed model output (${payload.salvage_strategy})`}
               >
-                salvaged
+                Request repaired
               </span>
             )}
             {payload.refused && (
-              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
-                refused: {payload.refused.replace(/_/g, " ")}
+              <span className="rounded bg-warning/10 px-2 py-1 text-sm text-warning">
+                Not run: {payload.refused.replace(/_/g, " ")}
               </span>
             )}
             {result === null && (
@@ -212,8 +243,8 @@ function ToolCallCard({ call, result }: { call: HarnessEvent; result: HarnessEve
           {result !== null && (
             <span
               className={cn(
-                "mt-0.5 block text-xs",
-                failed ? "text-amber-600 dark:text-amber-400" : "text-muted",
+                "mt-1 block break-words text-sm leading-6",
+                failed ? "text-warning" : "text-muted",
               )}
             >
               {resultPayload.summary}
@@ -221,34 +252,36 @@ function ToolCallCard({ call, result }: { call: HarnessEvent; result: HarnessEve
           )}
         </span>
         {result !== null && (
-          <span className="shrink-0 font-mono text-[10px] text-muted">
+          <span className="shrink-0 font-mono text-xs text-muted">
             {resultPayload.duration_ms}ms
           </span>
         )}
       </button>
 
       {open && (
-        <div className="space-y-2 border-t border-border px-3 py-2">
+        <div id={detailId} className="min-w-0 space-y-4 pb-4">
           <div>
-            <p className="mb-1 text-[10px] uppercase tracking-wide text-muted">Arguments</p>
-            <pre className="overflow-x-auto rounded bg-card p-2 font-mono text-[11px]">
+            <p className="mb-2 text-sm text-muted">Tool inputs</p>
+            <pre className="max-h-72 max-w-full overflow-auto rounded-md bg-card p-3 font-mono text-sm leading-6">
               {JSON.stringify(payload.arguments ?? {}, null, 2)}
             </pre>
           </div>
           {result !== null && (
             <div>
-              <p className="mb-1 text-[10px] uppercase tracking-wide text-muted">
+              <p className="mb-2 text-sm text-muted">
                 Result
                 {resultPayload.truncated_for_model && (
                   // The trail keeps the full result; the model saw an excerpt (D-G22). Worth
                   // saying, because the two differ and the difference matters when debugging.
-                  <span className="ml-2 normal-case text-amber-600 dark:text-amber-400">
+                  <span className="ml-2 text-warning">
                     the model saw a truncated excerpt of this
-                    {resultPayload.total_rows ? ` (${resultPayload.total_rows} rows)` : ""}
+                    {resultPayload.total_rows
+                      ? ` (${resultPayload.total_rows} rows)`
+                      : ""}
                   </span>
                 )}
               </p>
-              <pre className="max-h-72 overflow-auto rounded bg-card p-2 font-mono text-[11px]">
+              <pre className="max-h-72 max-w-full overflow-auto rounded-md bg-card p-3 font-mono text-sm leading-6">
                 {JSON.stringify(resultPayload.result ?? {}, null, 2)}
               </pre>
             </div>
@@ -265,9 +298,10 @@ function SpecialEvent({ event }: { event: HarnessEvent }) {
   if (event.event_type === "context_compacted") {
     return (
       <Row icon={<Scissors className="h-3.5 w-3.5" />} tone="muted">
-        Compacted {String(payload.dropped_messages)} earlier messages (
-        {String(payload.estimated_tokens_before)} → {String(payload.estimated_tokens_after)} est.
-        tokens). {String(payload.preserved_source_ids)} source citations carried forward.
+        Summarized {String(payload.dropped_messages)} earlier messages (
+        {String(payload.estimated_tokens_before)} →{" "}
+        {String(payload.estimated_tokens_after)} estimated tokens).{" "}
+        {String(payload.preserved_source_ids)} source citations carried forward.
       </Row>
     );
   }
@@ -275,9 +309,10 @@ function SpecialEvent({ event }: { event: HarnessEvent }) {
   if (event.event_type === "provider_state_dropped") {
     return (
       <Row icon={<AlertTriangle className="h-3.5 w-3.5" />} tone="warn">
-        Switched from {String(payload.from_provider)} to {String(payload.to_provider)} —{" "}
-        {String(payload.messages_affected)} message(s) lost provider-specific reasoning state. The
-        conversation continues correctly without it.
+        Switched from {String(payload.from_provider)} to{" "}
+        {String(payload.to_provider)} — {String(payload.messages_affected)}{" "}
+        message(s) lost provider-specific reasoning state. The next steps use
+        the saved conversation and source records.
       </Row>
     );
   }
@@ -285,10 +320,11 @@ function SpecialEvent({ event }: { event: HarnessEvent }) {
   if (event.event_type === "action_proposed") {
     return (
       <Row icon={<Check className="h-3.5 w-3.5" />} tone="accent">
-        Recommended <code className="font-mono">{String(payload.action_type)}</code> —{" "}
+        Recommended{" "}
+        <code className="font-mono">{String(payload.action_type)}</code> —{" "}
         {String(payload.queued_status)}
-        {payload.mandatory_human_review ? " (human review is mandatory)" : ""}. Review it in the
-        approval panel below.
+        {payload.mandatory_human_review ? " (human review is mandatory)" : ""}.
+        Review it in the approval panel below.
       </Row>
     );
   }
@@ -296,7 +332,8 @@ function SpecialEvent({ event }: { event: HarnessEvent }) {
   if (event.event_type === "action_failed_verification") {
     return (
       <Row icon={<AlertTriangle className="h-3.5 w-3.5" />} tone="warn">
-        A recommendation was rejected before anyone was asked: {String(payload.reason)}
+        A recommendation was rejected before anyone was asked:{" "}
+        {String(payload.reason)}
       </Row>
     );
   }
@@ -313,8 +350,9 @@ function SpecialEvent({ event }: { event: HarnessEvent }) {
   if (event.event_type === "agent_answered") {
     return (
       <Row icon={<Check className="h-3.5 w-3.5" />} tone="accent">
-        Answered after {String(payload.turns_used)} turn(s) — {String(payload.citations)} citations,{" "}
-        {String(payload.figures)} recomputed figures.
+        Answered after {String(payload.turns_used)} steps —{" "}
+        {String(payload.citations)} citations, {String(payload.figures)}{" "}
+        recomputed figures.
       </Row>
     );
   }
@@ -338,20 +376,22 @@ function Row({
   return (
     <div
       className={cn(
-        "flex items-start gap-2 rounded-md px-2 py-1.5 text-xs",
+        "flex items-start gap-2 py-2 text-sm leading-6",
         tone === "muted" && "text-muted",
-        tone === "warn" && "bg-amber-500/10 text-amber-700 dark:text-amber-400",
-        tone === "accent" && "bg-accent/10 text-foreground",
+        tone === "warn" && "text-warning",
+        tone === "accent" && "text-foreground",
       )}
     >
       <span className="mt-0.5 shrink-0">{icon}</span>
-      <span className="min-w-0">{children}</span>
+      <span className="min-w-0 break-words">{children}</span>
     </div>
   );
 }
 
 function providerOf(events: HarnessEvent[]): string | null {
-  const attributed = events.find((e) => e.provider_used !== null);
+  const attributed = events.find((e) => Boolean(e.provider_used));
   if (!attributed) return null;
-  return `${attributed.provider_used}/${attributed.model_used}`;
+  return [attributed.provider_used, attributed.model_used]
+    .filter(Boolean)
+    .join(" · ");
 }

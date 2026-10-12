@@ -18,15 +18,24 @@ import {
 } from "@/lib/harness/agent/service";
 import { resolveInvestigatorModel } from "@/lib/llm/router";
 import { INVESTIGATION_TYPE } from "@/lib/types";
+import { clampBudget } from "@/lib/harness/agent/loop";
+import { conversationContext, validateSourceScope } from "@/lib/harness/agent/conversation";
+
+export const maxDuration = 300;
+// Leave thirty seconds for persistence and request setup before the host terminates the job.
+const HOSTED_RUN_LIMIT_MS = 270_000;
 
 const bodySchema = z.object({
-  question: z.string().trim().min(8, "Ask a question of at least 8 characters"),
+  question: z.string().trim().min(8, "Ask a question of at least 8 characters").max(8_000, "Keep your question under 8,000 characters"),
+  parentId: z.string().uuid().optional(),
+  sourceIds: z.array(z.string().uuid()).max(10).optional(),
   budget: z
     .object({
       maxTurns: z.number().int().positive().optional(),
       maxTokens: z.number().int().positive().optional(),
       maxWallClockMs: z.number().int().positive().optional(),
       maxToolCallsPerTurn: z.number().int().positive().optional(),
+      maxRecommendations: z.number().int().nonnegative().optional(),
     })
     .optional(),
 });
@@ -47,13 +56,29 @@ export async function POST(req: NextRequest) {
     return jsonError(parsed.error.issues[0]?.message ?? "Invalid request body", 400);
   }
 
+  let context: Awaited<ReturnType<typeof conversationContext>>;
+  let sourceIds: string[] | undefined;
+  try {
+    context = await conversationContext(admin, profile.org_id, parsed.data.parentId);
+    sourceIds = parsed.data.sourceIds ?? context.sourceIds;
+    await validateSourceScope(admin, profile.org_id, sourceIds);
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "Could not check question context.", 400);
+  }
+
   // Fail fast, before creating any rows (D-G16). A model that cannot call tools produces one
   // clear message here rather than an investigation row that exists only to hold a failure.
-  const model = await resolveInvestigatorModel(admin, {
-    orgId: profile.org_id,
-    workflowType: INVESTIGATION_TYPE,
-  });
+  let model: Awaited<ReturnType<typeof resolveInvestigatorModel>>;
+  try {
+    model = await resolveInvestigatorModel(admin, { orgId: profile.org_id, workflowType: INVESTIGATION_TYPE });
+  } catch {
+    return jsonError("Model configuration is unavailable. Retry before starting an investigation.", 503);
+  }
   if (!model.ok) return jsonError(model.reason, 400);
+
+  const budget = clampBudget(parsed.data.budget);
+  const cappedForDeployment = process.env.NODE_ENV === "production" && budget.maxWallClockMs > HOSTED_RUN_LIMIT_MS;
+  if (cappedForDeployment) budget.maxWallClockMs = HOSTED_RUN_LIMIT_MS;
 
   let created;
   try {
@@ -62,28 +87,43 @@ export async function POST(req: NextRequest) {
       orgId: profile.org_id,
       createdBy: profile.id,
       question: parsed.data.question,
-      budget: parsed.data.budget,
+      budget,
+      conversationId: context.conversationId,
+      parentWorkflowId: context.parentWorkflowId,
+      sourceIds,
     });
   } catch (err) {
     return jsonError(err instanceof Error ? err.message : "Could not start investigation", 500);
   }
 
-  // Fire and forget, exactly as `POST /api/workflows/[id]/run` does for a pipeline. The run's
-  // own terminal paths always write a status, so a dropped serverless invocation leaves a row
-  // stuck at `running` rather than losing the record — and the event stream shows where it got
-  // to. Same tradeoff the pipeline runner already makes.
-  void executeInvestigation({
+  // Retain this exact promise through the response. This prevents routine response completion
+  // from suspending the run, but is not durable execution: a host crash still needs a worker
+  // lease, checkpoint, and recovery process before this can promise enterprise availability.
+  const task = executeInvestigation({
     db: admin,
     workflowId: created.workflowId,
     orgId: profile.org_id,
     question: parsed.data.question,
-    budget: parsed.data.budget,
+    budget: created.budget,
+    sourceIds,
+    history: context.history,
+    userId: profile.id,
+  }).catch((error: unknown) => {
+    console.error("[investigation] background execution failed", error instanceof Error ? error.name : "UnknownError");
   });
+  try {
+    const { waitUntil } = await import("@vercel/functions");
+    waitUntil(task);
+  } catch {
+    // Development lacks the host lifecycle hook. The task already exists; never execute twice.
+    void task;
+  }
 
   return NextResponse.json(
     {
       id: created.workflowId,
       budget: created.budget,
+      ...(cappedForDeployment ? { budgetAdjustment: "Wall-clock budget capped at 270 seconds for this deployment." } : {}),
       model: { provider: model.providerId, model: model.model },
     },
     { status: 201 },

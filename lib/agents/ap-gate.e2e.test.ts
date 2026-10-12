@@ -20,7 +20,8 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /* -------------------------------------------------------------------------- */
 /* Hoisted fakes: Supabase (tables + storage) and the LLM router.              */
@@ -193,8 +194,8 @@ function seed() {
     completed_at: null,
   });
   h.state.workflow_files.push(
-    { id: "f1", workflow_id: WF, file_type: "po", storage_path: "po.csv", filename: "purchase_orders_demo.csv" },
-    { id: "f2", workflow_id: WF, file_type: "invoice", storage_path: "inv.csv", filename: "invoices_demo.csv" },
+    { id: "f1", workflow_id: WF, file_type: "po", storage_path: "po.csv", filename: "purchase_orders_demo.csv", sha256: createHash("sha256").update(h.storage["po.csv"]).digest("hex") },
+    { id: "f2", workflow_id: WF, file_type: "invoice", storage_path: "inv.csv", filename: "invoices_demo.csv", sha256: createHash("sha256").update(h.storage["inv.csv"]).digest("hex") },
   );
 }
 
@@ -230,9 +231,13 @@ async function approve(ids: string[]) {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-07-01T12:00:00Z"));
   for (const key of Object.keys(h.state)) h.state[key] = [];
   for (const key of Object.keys(h.storage)) delete h.storage[key];
 });
+
+afterEach(() => vi.useRealTimers());
 
 /* -------------------------------------------------------------------------- */
 

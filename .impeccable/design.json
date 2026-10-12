@@ -1,0 +1,257 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-12T21:42:31.747954+00:00",
+  "title": "Design System: FinFlow",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "Graphite Ground"
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "Graphite Surface"
+      },
+      "card-hover": {
+        "role": "neutral",
+        "displayName": "Graphite Hover"
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Slate Rule"
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Cool White"
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Cool Gray"
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Sage"
+      },
+      "accent-strong": {
+        "role": "primary",
+        "displayName": "Deep Sage"
+      },
+      "on-accent": {
+        "role": "primary",
+        "displayName": "Ink on Sage"
+      },
+      "warning": {
+        "role": "secondary",
+        "displayName": "Review Amber"
+      },
+      "error": {
+        "role": "secondary",
+        "displayName": "Error Rose"
+      },
+      "running": {
+        "role": "secondary",
+        "displayName": "Running Blue"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Public Display",
+        "purpose": "Public hero headline."
+      },
+      "headline": {
+        "displayName": "Public Headline",
+        "purpose": "Public workflow section headings."
+      },
+      "title": {
+        "displayName": "Workspace Title",
+        "purpose": "Workspace page-title class."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Shared component prose and working tables."
+      },
+      "label": {
+        "displayName": "Control Label",
+        "purpose": "Form labels and shared buttons."
+      },
+      "data": {
+        "displayName": "Financial Data",
+        "purpose": "Sample monetary figures and numeric alignment."
+      },
+      "status": {
+        "displayName": "Status",
+        "purpose": "Shared mono badges."
+      }
+    },
+    "shadows": [
+      {
+        "name": "dialog",
+        "value": "0 24px 80px rgb(0 0 0 / 35%)",
+        "purpose": "Native modal dialog elevation."
+      },
+      {
+        "name": "selected-tab",
+        "value": "0 1px 0 var(--accent)",
+        "purpose": "Sample tab selection underline, not elevation."
+      }
+    ],
+    "motion": [
+      {
+        "name": "public-color",
+        "value": "0.2s ease",
+        "purpose": "Public CTA background and workflow-link color transitions."
+      },
+      {
+        "name": "shared-color",
+        "value": "150ms cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Tailwind default transition-colors on shared controls."
+      },
+      {
+        "name": "step-in",
+        "value": "0.25s ease-out",
+        "purpose": "Workflow step state fade from opacity 0 and translateY(-3px)."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "Global reduced-motion animation and transition duration; smooth scrolling is disabled."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "public-wide-collapse",
+        "value": "900px"
+      },
+      {
+        "name": "workspace-md",
+        "value": "768px"
+      },
+      {
+        "name": "public-mobile",
+        "value": "640px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "Shared Button default variant, default size.",
+      "html": "<button class=\"ds-button-default\" type=\"button\">Continue</button>",
+      "css": ".ds-button-default{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border-radius:var(--radius-control, 6px);font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:color 150ms cubic-bezier(0.4,0,0.2,1),background-color 150ms cubic-bezier(0.4,0,0.2,1);background:var(--card, #181d20);color:var(--foreground, #eef2f4);border:1px solid var(--border, #343d43);}.ds-button-default:hover{background:var(--border, #343d43);}.ds-button-default:focus-visible{outline:none;box-shadow:0 0 0 2px var(--accent, #d3e6bd);}.ds-button-default:disabled{pointer-events:none;opacity:.5;}@media(prefers-reduced-motion:reduce){.ds-button-default{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Shared Button accent variant, default size.",
+      "html": "<button class=\"ds-button-primary\" type=\"button\">Save</button>",
+      "css": ".ds-button-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border-radius:var(--radius-control, 6px);font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:color 150ms cubic-bezier(0.4,0,0.2,1),background-color 150ms cubic-bezier(0.4,0,0.2,1);background:var(--accent, #d3e6bd);color:var(--on-accent, #172015);border:0;}.ds-button-primary:hover{opacity:.9;}.ds-button-primary:focus-visible{outline:none;box-shadow:0 0 0 2px var(--accent, #d3e6bd);}.ds-button-primary:disabled{pointer-events:none;opacity:.5;}@media(prefers-reduced-motion:reduce){.ds-button-primary{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Shared Button outline variant, default size.",
+      "html": "<button class=\"ds-button-outline\" type=\"button\">Test connection</button>",
+      "css": ".ds-button-outline{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border-radius:var(--radius-control, 6px);font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:color 150ms cubic-bezier(0.4,0,0.2,1),background-color 150ms cubic-bezier(0.4,0,0.2,1);background:transparent;color:var(--foreground, #eef2f4);border:1px solid var(--border, #343d43);}.ds-button-outline:hover{background:var(--card, #181d20);}.ds-button-outline:focus-visible{outline:none;box-shadow:0 0 0 2px var(--accent, #d3e6bd);}.ds-button-outline:disabled{pointer-events:none;opacity:.5;}@media(prefers-reduced-motion:reduce){.ds-button-outline{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Shared Button ghost variant, default size.",
+      "html": "<button class=\"ds-button-ghost\" type=\"button\">Cancel</button>",
+      "css": ".ds-button-ghost{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border-radius:var(--radius-control, 6px);font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:color 150ms cubic-bezier(0.4,0,0.2,1),background-color 150ms cubic-bezier(0.4,0,0.2,1);background:transparent;color:var(--foreground, #eef2f4);border:0;}.ds-button-ghost:hover{background:var(--card, #181d20);}.ds-button-ghost:focus-visible{outline:none;box-shadow:0 0 0 2px var(--accent, #d3e6bd);}.ds-button-ghost:disabled{pointer-events:none;opacity:.5;}@media(prefers-reduced-motion:reduce){.ds-button-ghost{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Warning Button",
+      "kind": "button",
+      "refersTo": "button-warning",
+      "description": "Shared Button warning variant, default size.",
+      "html": "<button class=\"ds-button-warning\" type=\"button\">Request revision</button>",
+      "css": ".ds-button-warning{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border-radius:var(--radius-control, 6px);font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:color 150ms cubic-bezier(0.4,0,0.2,1),background-color 150ms cubic-bezier(0.4,0,0.2,1);background:var(--warning, #ebc17b);color:var(--on-accent, #172015);border:0;}.ds-button-warning:hover{opacity:.9;}.ds-button-warning:focus-visible{outline:none;box-shadow:0 0 0 2px var(--accent, #d3e6bd);}.ds-button-warning:disabled{pointer-events:none;opacity:.5;}@media(prefers-reduced-motion:reduce){.ds-button-warning{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "Shared Button destructive variant, default size.",
+      "html": "<button class=\"ds-button-destructive\" type=\"button\">Reject</button>",
+      "css": ".ds-button-destructive{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 16px;border-radius:var(--radius-control, 6px);font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:14px;line-height:20px;font-weight:500;cursor:pointer;transition:color 150ms cubic-bezier(0.4,0,0.2,1),background-color 150ms cubic-bezier(0.4,0,0.2,1);background:var(--error, #ff9e9e);color:var(--on-accent, #172015);border:0;}.ds-button-destructive:hover{opacity:.9;}.ds-button-destructive:focus-visible{outline:none;box-shadow:0 0 0 2px var(--accent, #d3e6bd);}.ds-button-destructive:disabled{pointer-events:none;opacity:.5;}@media(prefers-reduced-motion:reduce){.ds-button-destructive{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Provider Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Settings input pattern with an associated label and accent focus ring.",
+      "html": "<label class=\"ds-field-label\" for=\"ds-provider-name\">Display name</label><input class=\"ds-field\" id=\"ds-provider-name\" type=\"text\" placeholder=\"Fireworks \u00b7 finance workspace\" />",
+      "css": ".ds-field-label{display:block;margin-bottom:6px;font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:14px;line-height:20px;font-weight:500;color:var(--foreground, #eef2f4);}.ds-field{width:100%;border:1px solid var(--border, #343d43);border-radius:var(--radius-control, 6px);background:transparent;padding:8px 12px;font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:14px;line-height:20px;color:var(--foreground, #eef2f4);caret-color:var(--accent, #d3e6bd);color-scheme:dark;}.ds-field::placeholder{color:var(--muted, #a4afb7);}.ds-field:focus-visible{outline:none;box-shadow:0 0 0 2px var(--accent, #d3e6bd);}"
+    },
+    {
+      "name": "Workspace Navigation",
+      "kind": "nav",
+      "refersTo": "navigation-active",
+      "description": "An active workspace destination and a muted destination using the existing row pattern.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Workspace preview\"><a class=\"ds-nav-link\" href=\"#overview\" aria-current=\"page\"><svg width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect width=\"7\" height=\"9\" x=\"3\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"14\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"9\" x=\"14\" y=\"12\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"3\" y=\"16\" rx=\"1\"/></svg>Overview</a><a class=\"ds-nav-link\" href=\"#new-workflow\"><svg width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.7\" stroke-linecap=\"round\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"/></svg>New workflow</a></nav>",
+      "css": ".ds-nav{padding:12px;background:var(--card, #181d20);}.ds-nav-link{display:flex;min-height:44px;align-items:center;gap:12px;padding:0 12px;border-radius:var(--radius-control, 6px);font-family:var(--font-sans, Geist, system-ui, sans-serif);font-size:13px;color:var(--muted, #a4afb7);text-decoration:none;transition:color 150ms cubic-bezier(0.4,0,0.2,1),background-color 150ms cubic-bezier(0.4,0,0.2,1);}.ds-nav-link+.ds-nav-link{margin-top:4px;}.ds-nav-link[aria-current=page],.ds-nav-link:hover{background:var(--card-hover, #20272b);color:var(--foreground, #eef2f4);}.ds-nav-link:focus-visible{outline:2px solid var(--accent, #d3e6bd);outline-offset:4px;}@media(prefers-reduced-motion:reduce){.ds-nav-link{transition-duration:.01ms;}}"
+    },
+    {
+      "name": "Review Status Badge",
+      "kind": "chip",
+      "refersTo": "badge-warning",
+      "description": "Static warning-state badge, carrying readable state text.",
+      "html": "<span class=\"ds-badge\">Approval</span>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;gap:4px;border:1px solid transparent;border-radius:calc(infinity * 1px);padding:2px 8px;background:color-mix(in oklab, var(--warning, #ebc17b) 15%, transparent);color:var(--warning, #ebc17b);font-family:var(--font-mono, \"Geist Mono\", ui-monospace, monospace);font-size:12px;line-height:16px;}"
+    },
+    {
+      "name": "Working Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "The shared static card, with header and content padding.",
+      "html": "<section class=\"ds-card\"><header class=\"ds-card-header\"><h3 class=\"ds-card-title\">Usage</h3><p class=\"ds-card-description\">Model calls and token usage</p></header><div class=\"ds-card-content\">No usage recorded yet.</div></section>",
+      "css": ".ds-card{border:1px solid var(--border, #343d43);border-radius:var(--radius-panel, 12px);background:var(--card, #181d20);color:var(--foreground, #eef2f4);font-family:var(--font-sans, Geist, system-ui, sans-serif);}.ds-card-header{display:flex;flex-direction:column;gap:6px;padding:16px;}.ds-card-title{margin:0;font-size:16px;font-weight:600;line-height:1;letter-spacing:-.025em;}.ds-card-description{margin:0;font-size:14px;line-height:20px;color:var(--muted, #a4afb7);}.ds-card-content{padding:0 16px 16px;font-size:14px;line-height:20px;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Dark institutional",
+    "overview": "The user-selected dark institutional direction is expressed through graphite surfaces, cool white Geist typography, fine rules, and financial figures with stable alignment. The system feels restrained and precise: generous public headings lead into denser working records, settings, and review controls.\n\nVisual emphasis belongs to the next action and the state of the work. Sage identifies primary actions and positive outcomes; amber asks for review. A broad sage section is also present on the public page, so restraint describes the hierarchy rather than an arbitrary limit on accent coverage. Source evidence and human decisions remain visible, as required by PRODUCT.md.",
+    "keyCharacteristics": [
+      "Graphite layers with fine separators and minimal ambient depth.",
+      "Geist for prose and controls; Geist Mono for financial data and compact status.",
+      "Clear state colors paired with text and, where used, vector icons.",
+      "Dense records in bounded panels; responsive stacking with local table scrolling."
+    ],
+    "rules": [
+      {
+        "name": "The Semantic Color Rule",
+        "body": "Use the existing color roles for state and emphasis. Pair warning, error, running, and completion colors with readable state text; color is not the only signal.",
+        "section": "colors"
+      },
+      {
+        "name": "The Financial Alignment Rule",
+        "body": "Keep financial columns tabular. Use Geist Mono for monetary figures and technical identifiers, while keeping explanatory prose in Geist.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tonal Surface Rule",
+        "body": "Separate ordinary surfaces with graphite tones and fine borders. Reserve the documented diffuse shadow for modal dialogs.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use semantic roles from app/globals.css and the normative tokens above.",
+      "Do keep amounts tabular and retain visible source references beside the result they explain.",
+      "Do keep visible focus, associated field labels, textual states, and keyboard access to sample tabs.",
+      "Do let narrow layouts stack and scroll wide tables within their own panels.",
+      "Do label sample financial records as illustrative."
+    ],
+    "donts": [
+      "Don't add decorative gradients, chat sparkle motifs, or generated illustrations to this institutional world.",
+      "Don't use invented customer logos, artificial performance metrics, or unsubstantiated certification claims as visual credibility.",
+      "Don't turn every panel into a floating card with a shadow.",
+      "Don't treat an authorization action as evidence of payment execution."
+    ]
+  }
+}

@@ -41,6 +41,12 @@ const COUNT_KEYS: ReadonlySet<string> = new Set([
   "total_tokens",
   "estimated_tokens_before",
   "estimated_tokens_after",
+  "estimated_tokens",
+  "estimated_input_tokens",
+  "system_estimated_tokens",
+  "tool_definitions_estimated_tokens",
+  "question_estimated_tokens",
+  "cached_tokens_in",
   // Provider usage blocks.
   "input_tokens",
   "output_tokens",
@@ -70,7 +76,10 @@ function redact(value: unknown): unknown {
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = isSensitiveKey(key) ? REDACTED : redact(v);
+      // A count-shaped key is not permission to persist an arbitrary string or object.
+      out[key] = COUNT_KEYS.has(key)
+        ? v === null || (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) ? v : REDACTED
+        : isSensitiveKey(key) ? REDACTED : redact(v);
     }
     return out;
   }

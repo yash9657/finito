@@ -255,7 +255,7 @@ async function executeStep(
     // failure with no retries — the message points to Settings → Models.
     if (def.kind === "llm") {
       try {
-        resolved = await resolveProvider(db, { orgId, workflowType, stepKey: def.key });
+        resolved = await resolveProvider(db, { orgId, workflowType, stepKey: def.key, role: def.role });
       } catch (err) {
         if (err instanceof NoProviderConfiguredError) {
           await failStep(db, workflowId, def, stepId, "system", "system", err.message, aborted);
@@ -443,7 +443,10 @@ async function loadAndParseFiles(
       throw new Error(`Failed to download "${row.storage_path}": ${dlError?.message ?? "no data"}`);
     }
     const buffer = Buffer.from(await blob.arrayBuffer());
-    files[row.file_type] = parseFile(buffer, row.file_type, { filename: row.filename });
+    const parsed = parseFile(buffer, row.file_type, { filename: row.filename });
+    if (parsed.meta.sha256 !== row.sha256) throw new Error(`Source integrity check failed for ${row.filename}`);
+    if (!parsed.rows.length || parsed.errors.length) throw new Error(`${row.filename}: source contains invalid or no usable rows. Correct and re-upload the source file.`);
+    files[row.file_type] = parsed;
   }
   return files;
 }

@@ -5,19 +5,21 @@
  * capabilities should be a closed array someone can read, not an emergent property of which
  * modules happen to be imported where.
  *
- * `investigator` gets seven. Every other role gets none — not because they are untrusted, but
- * because no other role runs an agent loop; a parser has no turn in which to call a tool. A role
+ * `investigator` gets the read and isolated-analysis tools below. Every other role gets none —
+ * no other role runs an agent loop; a parser has no turn in which to call a tool. A role
  * with an empty list cannot be started as an investigation at all, which is the fail-closed
  * default this table exists to provide.
  */
 
 import { READ_TOOLS } from "@/lib/harness/agent/tools/read-tools";
+import { SOURCE_TOOLS } from "@/lib/harness/agent/tools/source-tools";
+import { MEMORY_TOOLS } from "@/lib/harness/agent/tools/memory-tools";
 import { recommendAction } from "@/lib/harness/agent/tools/recommend-action";
 import type { AgentTool } from "@/lib/harness/agent/tools/types";
 import type { ToolDefinition } from "@/lib/llm/messages";
 import type { StepRole } from "@/lib/types";
 
-export const ALL_TOOLS: AgentTool[] = [...READ_TOOLS, recommendAction];
+export const ALL_TOOLS: AgentTool[] = [...READ_TOOLS, ...SOURCE_TOOLS, ...MEMORY_TOOLS, recommendAction];
 
 const BY_NAME = new Map(ALL_TOOLS.map((t) => [t.name, t]));
 

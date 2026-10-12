@@ -23,10 +23,13 @@ export async function GET(
   // row (D-G3): org scoping, 404-vs-403 behaviour and audit context all come for free.
   const access = await requireWorkflowAccess(id);
   if (!access.ok) return access.response;
-  const { admin, workflow } = access;
+  const { admin, workflow, profile } = access;
 
   if (isPipelineType(workflow.type)) {
-    return jsonError("That workflow is a pipeline run, not an investigation.", 400);
+    return jsonError(
+      "That workflow is a pipeline run, not an investigation.",
+      400,
+    );
   }
 
   const investigation = await loadInvestigation(admin, id);
@@ -34,12 +37,27 @@ export async function GET(
     return jsonError("Investigation not found", 404);
   }
 
-  const [events, actions] = await Promise.all([
+  const [events, actions, conversationResult] = await Promise.all([
     readEvents(admin, id),
     // Recommendations live in the SAME table the approval panel reads (D-G21) — there is no
     // parallel queue, so the transcript shows exactly what a reviewer will see.
     listActions(admin, id),
+    admin
+      .from("investigations")
+      .select(
+        "workflow_id, question, answer, status, created_at, parent_workflow_id",
+      )
+      .eq("org_id", profile.org_id)
+      .eq("conversation_id", investigation.conversation_id ?? id)
+      .order("created_at", { ascending: false })
+      .limit(100),
   ]);
+
+  if (conversationResult.error)
+    return jsonError(
+      "Conversation history could not be loaded. Please retry.",
+      503,
+    );
 
   return NextResponse.json({
     investigation,
@@ -52,5 +70,9 @@ export async function GET(
     },
     events,
     actions,
+    conversation: conversationResult.data ?? [],
+    viewer: {
+      canReview: profile.role === "admin" || profile.role === "reviewer",
+    },
   });
 }

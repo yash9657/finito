@@ -28,6 +28,8 @@
 import { z } from "zod";
 import { resolveSourceIds, type LedgerRow } from "@/lib/harness/agent/datasets";
 import type { AnswerFigure, InvestigationAnswer } from "@/lib/types";
+import type { DataSource, DataRow } from "@/lib/data/types";
+import { aggregateExactDecimals } from "@/lib/harness/agent/sandbox/exact-decimal";
 
 /**
  * What the model returns for a final answer.
@@ -54,6 +56,7 @@ export const answerSchema = z.object({
       label: z.string(),
       operation: z.enum(["sum", "count", "difference", "average"]),
       sourceIds: z.array(z.string()),
+      column: z.string().max(500).optional().describe("For src: general-source figures only, the exact numeric column name. Do not set this for wf: ledger figures. Values are rendered in source units; no currency is inferred."),
     }),
   ),
   citations: z.array(
@@ -77,7 +80,7 @@ export type AnswerValidation =
  * unusable and push the model toward writing amounts in words to evade it. Currency markers are
  * the reliable signal that a number is a figure.
  */
-const CURRENCY_LITERAL = /(\$\s?[\d,]+(?:\.\d+)?)|(\b[\d,]+(?:\.\d+)?\s?(?:dollars|USD)\b)|(\bUSD\s?[\d,]+(?:\.\d+)?)/gi;
+const CURRENCY_LITERAL = /(?:\p{Sc}\s?[-+]?\s?[\d,]+(?:\.\d+)?)|(?:\b[\d,]+(?:\.\d+)?\s?(?:dollars|euros|pounds|yen|rupees|USD|EUR|GBP|JPY|CAD|AUD|CHF|INR|CNY|RMB|HKD|SGD|NZD)\b)|(?:\b(?:USD|EUR|GBP|JPY|CAD|AUD|CHF|INR|CNY|RMB|HKD|SGD|NZD)\s?[-+]?\s?[\d,]+(?:\.\d+)?)/giu;
 
 const PLACEHOLDER = /\{\{([A-Za-z0-9_]+)\}\}/g;
 
@@ -90,9 +93,16 @@ const PLACEHOLDER = /\{\{([A-Za-z0-9_]+)\}\}/g;
 export function validateAnswer(
   raw: RawAnswer,
   rows: LedgerRow[],
-  opts: { partial: boolean },
+  opts: { partial: boolean; dataSources?: DataSource[] },
 ): AnswerValidation {
   const problems: string[] = [];
+  const genericRows = new Map<string, { row: DataRow; basis: string; header?: boolean }>();
+  for (const source of opts.dataSources ?? []) {
+    for (const table of source.tables) {
+      for (const row of [...table.preamble, ...table.rows]) genericRows.set(row.sourceId, { row, basis: `${source.id}/${table.id}` });
+      if (table.header) genericRows.set(table.header.sourceId, { row: table.header, basis: `${source.id}/${table.id}`, header: true });
+    }
+  }
 
   /* ---- 1. Every cited source id must resolve to a real row --------------- */
   const allCited = [
@@ -100,7 +110,7 @@ export function validateAnswer(
     ...raw.findings.flatMap((f) => f.sourceIds),
     ...raw.figures.flatMap((f) => f.sourceIds),
   ];
-  const { unresolved } = resolveSourceIds(rows, allCited);
+  const { unresolved } = resolveSourceIds(rows, allCited.filter((id) => !genericRows.has(id)));
   if (unresolved.length > 0) {
     const shown = [...new Set(unresolved)].slice(0, 10);
     problems.push(
@@ -112,7 +122,13 @@ export function validateAnswer(
 
   /* ---- 2. Every figure must be computable, and every placeholder declared - */
   const byRef = new Map(raw.figures.map((f) => [f.ref, f]));
-  const usedRefs = [...raw.prose.matchAll(PLACEHOLDER)].map((m) => m[1]);
+  if (byRef.size !== raw.figures.length) problems.push("Each figure ref must be unique.");
+  const narrativeFields = [raw.prose, ...raw.findings.map(f => f.statement), ...raw.citations.map(c => c.note), ...raw.figures.map(f => f.label)];
+  const usedRefs = narrativeFields.flatMap(text => [...text.matchAll(PLACEHOLDER)].map((m) => m[1]));
+  if (narrativeFields.some(text => /\{\{|\}\}/.test(text.replace(PLACEHOLDER, "")))) problems.push("A placeholder is malformed. Use a short ref like {{total}}, never a source ID or column expression inside braces, and declare that ref in figures.");
+  for (const finding of raw.findings) {
+    if (finding.sourceIds.length === 0) problems.push("Every finding must cite at least one source row.");
+  }
 
   for (const ref of new Set(usedRefs)) {
     if (!byRef.has(ref)) {
@@ -123,6 +139,13 @@ export function validateAnswer(
     }
   }
   for (const figure of raw.figures) {
+    if (!/^[A-Za-z0-9_]{1,64}$/.test(figure.ref)) problems.push(`Figure ref must contain only 1–64 letters, digits or underscores: ${figure.ref}.`);
+    if (new Set(figure.sourceIds).size !== figure.sourceIds.length) {
+      problems.push(`Figure "${figure.ref}" repeats a source row; count each source only once.`);
+    }
+    if (figure.operation === "difference" && figure.sourceIds.length !== 2) {
+      problems.push(`Figure "${figure.ref}" must cite exactly two rows for a difference.`);
+    }
     if (figure.sourceIds.length === 0) {
       problems.push(
         `Figure "${figure.ref}" cites no source rows, so it cannot be computed. Every figure ` +
@@ -139,20 +162,69 @@ export function validateAnswer(
   /* ---- 3. Compute every figure IN CODE ----------------------------------- */
   const computed: AnswerFigure[] = [];
   for (const figure of raw.figures) {
+    const general = figure.sourceIds.map((id) => genericRows.get(id));
+    if (general.some(Boolean)) {
+      if (!general.every(Boolean)) {
+        problems.push(`Figure "${figure.ref}" mixes general source rows with ledger or unknown rows. Keep source bases separate.`);
+        continue;
+      }
+      const resolved = general as { row: DataRow; basis: string; header?: boolean }[];
+      if (resolved.some((item) => item.header)) {
+        problems.push(`Figure "${figure.ref}" includes a header row. Headers can evidence column interpretation but cannot count or aggregate as data records.`);
+        continue;
+      }
+      if (new Set(resolved.map((entry) => entry.basis)).size !== 1) {
+        problems.push(`Figure "${figure.ref}" combines different source tables. Their currency, scale and entity basis have not been verified; use a labeled analysis artifact for cross-table calculations.`);
+        continue;
+      }
+      const base = { ref: figure.ref, label: figure.label, operation: figure.operation, sourceIds: figure.sourceIds };
+      if (figure.operation === "count") {
+        computed.push({ ...base, value: resolved.length });
+        continue;
+      }
+      if (!figure.column || resolved.some(({ row }) => !Object.hasOwn(row.values, figure.column!))) {
+        problems.push(`Figure "${figure.ref}" needs an exact numeric column present in every cited general source row. Inspect the table and set column; units and currencies are not inferred.`);
+        continue;
+      }
+      try {
+        computed.push({ ...base, column: figure.column, decimalValue: aggregateExactDecimals(resolved.map(({ row }) => row.values[figure.column!]), figure.operation) });
+      } catch (error) {
+        problems.push(`Figure "${figure.ref}": ${error instanceof Error ? error.message : "Source values cannot be computed exactly"}.`);
+      }
+      continue;
+    }
+    if (figure.column !== undefined) {
+      problems.push(`Figure "${figure.ref}" sets column on ledger rows. Ledger figures use validated amountCents; omit column.`);
+      continue;
+    }
     const { resolved, unresolved: missing } = resolveSourceIds(rows, figure.sourceIds);
     if (missing.length > 0) continue; // already reported in step 1
     if (resolved.length === 0) continue;
-    computed.push(computeFigure(figure, resolved));
+    if ((figure.operation === "sum" || figure.operation === "average") && new Set(resolved.map(row => `${row.workflowId}/${row.dataset}`)).size !== 1) {
+      problems.push(`Figure "${figure.ref}" combines financial sources. Sum or average rows from one workflow and dataset only; do not consolidate different bases or overlapping uploads.`);
+      continue;
+    }
+    if (resolved.some(row => !Number.isSafeInteger(row.amountCents))) {
+      problems.push(`Figure "${figure.ref}" contains amounts outside exact integer-cent arithmetic limits.`);
+      continue;
+    }
+    const result = computeFigure(figure, resolved);
+    if (result.valueCents !== undefined && !Number.isSafeInteger(result.valueCents)) {
+      problems.push(`Figure "${figure.ref}" exceeds exact integer-cent arithmetic limits.`);
+      continue;
+    }
+    computed.push(result);
   }
 
   /* ---- 4. No bare currency literal may survive --------------------------- */
   // Checked BEFORE substitution: afterwards every figure is a literal by construction, so the
   // only moment the distinction exists is now.
-  const literals = [...raw.prose.matchAll(CURRENCY_LITERAL)].map((m) => m[0].trim());
+  const narrative = [raw.prose, ...raw.findings.map(finding => finding.statement), ...raw.citations.map(citation => citation.note), ...raw.figures.map(figure => figure.label)].join("\n");
+  const literals = [...narrative.matchAll(CURRENCY_LITERAL)].map((m) => m[0].trim());
   if (literals.length > 0) {
     const shown = [...new Set(literals)].slice(0, 5);
     problems.push(
-      `The prose contains monetary amounts written directly: ${shown.join(", ")}. Every ` +
+      `The answer contains monetary amounts written directly: ${shown.join(", ")}. Every ` +
         `monetary figure must be a {{ref}} placeholder backed by a figure entry, so it can be ` +
         `recomputed from the source rows rather than taken from your text.`,
     );
@@ -162,7 +234,7 @@ export function validateAnswer(
 
   /* ---- 5. Substitute, and produce the final answer ----------------------- */
   const computedByRef = new Map(computed.map((f) => [f.ref, f]));
-  const prose = raw.prose.replace(PLACEHOLDER, (match, ref: string) => {
+  const substitute = (text: string) => text.replace(PLACEHOLDER, (match, ref: string) => {
     const figure = computedByRef.get(ref);
     if (!figure) return match; // unreachable: step 2 rejected undeclared refs
     return renderFigure(figure);
@@ -171,11 +243,11 @@ export function validateAnswer(
   return {
     ok: true,
     answer: {
-      prose,
+      prose: substitute(raw.prose),
       proseTemplate: raw.prose,
-      findings: raw.findings,
-      figures: computed,
-      citations: raw.citations,
+      findings: raw.findings.map(finding => ({ ...finding, statement: substitute(finding.statement) })),
+      figures: computed.map(figure => ({ ...figure, label: substitute(figure.label) })),
+      citations: raw.citations.map(citation => ({ ...citation, note: substitute(citation.note) })),
       partial: opts.partial,
     },
   };
@@ -204,12 +276,17 @@ function computeFigure(
       return { ...base, value: rows.length };
 
     case "sum":
-      return { ...base, valueCents: rows.reduce((s, r) => s + r.amountCents, 0) };
+      return { ...base, valueCents: Number(rows.reduce((sum, row) => sum + BigInt(row.amountCents), BigInt(0))) };
 
     case "average": {
-      const total = rows.reduce((s, r) => s + r.amountCents, 0);
-      // Integer cents, rounded once — a float mean would reintroduce the drift D7 exists to stop.
-      return { ...base, valueCents: Math.round(total / rows.length) };
+      const total = rows.reduce((sum, row) => sum + BigInt(row.amountCents), BigInt(0));
+      const count = BigInt(rows.length);
+      const quotient = total / count;
+      const remainder = total % count;
+      // Match Math.round's half-towards-positive-infinity rule without a lossy float division.
+      const rounded = remainder * BigInt(2) >= count ? quotient + BigInt(1)
+        : -remainder * BigInt(2) > count ? quotient - BigInt(1) : quotient;
+      return { ...base, valueCents: Number(rounded) };
     }
 
     case "difference": {
@@ -222,7 +299,7 @@ function computeFigure(
         : rows;
       const first = ordered[0].amountCents;
       const last = ordered[ordered.length - 1].amountCents;
-      return { ...base, valueCents: last - first };
+      return { ...base, valueCents: Number(BigInt(last) - BigInt(first)) };
     }
   }
 }
@@ -230,13 +307,13 @@ function computeFigure(
 /** How a computed figure appears in the prose. Display only — the value is already fixed. */
 function renderFigure(figure: AnswerFigure): string {
   if (figure.operation === "count") return String(figure.value ?? 0);
+  if (figure.decimalValue !== undefined) return `${figure.decimalValue} (source units)`;
   const cents = figure.valueCents ?? 0;
   const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  return `${sign}$${(abs / 100).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+  const abs = BigInt(Math.abs(cents));
+  const whole = (abs / BigInt(100)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const fraction = (abs % BigInt(100)).toString().padStart(2, "0");
+  return `${sign}$${whole}.${fraction}`;
 }
 
 /** The corrective message sent back to the model after a failed validation. */

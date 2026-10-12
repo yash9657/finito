@@ -41,9 +41,10 @@ const GROUP_LIMIT = 40;
 export const listDatasets: AgentTool = {
   name: "list_datasets",
   description:
-    "List every financial dataset available for this organization, with row counts, date ranges " +
-    "and totals. Call this FIRST — it tells you what data exists and which fields are populated " +
-    "in each dataset, so you never have to guess at what you can query.",
+    "List the financial workflow datasets currently loaded, with row counts, date ranges " +
+    "and totals. Initial loading covers at most the latest 25 workflows; older files can be " +
+    "discovered through workspace history and activated with load_historical_workflow. " +
+    "General uploaded files are listed separately by list_sources.",
   parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
 
   async run(_args, ctx): Promise<ToolResultEnvelope> {
@@ -51,12 +52,12 @@ export const listDatasets: AgentTool = {
 
     if (summaries.length === 0) {
       return empty(
-        "This organization has no uploaded financial data.",
+        "No workflow financial datasets are currently loaded.",
         unreadable.length > 0
           ? `${unreadable.length} file(s) could not be read: ${unreadable
               .map((u) => `${u.filename} (${u.reason})`)
               .join("; ")}. Report this rather than concluding there is no data.`
-          : "There is nothing to investigate. Say so in your answer rather than speculating.",
+          : "Before concluding there is nothing to investigate, check list_sources for general files and search_workspace_history for relevant retained workflow uploads.",
       );
     }
 
@@ -88,6 +89,7 @@ export const listDatasets: AgentTool = {
         })),
         // Surfaced, never swallowed: an agent that cannot see a file must know it exists.
         unreadableFiles: unreadable,
+        scope: "Currently loaded workflows only: initially at most the latest 25, plus explicitly activated historical workflows. This is not the entire retained workspace catalog.",
       },
       hint:
         unreadable.length > 0
@@ -116,15 +118,18 @@ export const queryLedger: AgentTool = {
   description:
     "Filter, group and aggregate financial rows in ONE call. Combine any filters you need — " +
     "this should answer most questions on its own, without a follow-up. Amounts are integer " +
-    "cents. Returns group totals plus a small sample of matching rows with their source ids.",
+    "cents. Select exactly one dataset; select workflowId if more than one uploaded source matches. Returns group totals plus a small sample of matching rows with their source ids.",
   parameters: {
     type: "object",
     properties: {
       datasets: {
         type: "array",
         items: { type: "string", enum: [...FILE_TYPES] },
-        description: "Restrict to these datasets. Omit to search all of them.",
+        minItems: 1,
+        maxItems: 1,
+        description: "Exactly one dataset. Bank, ERP, budget and actuals are different financial bases and must never be summed together.",
       },
+      workflowId: { type: "string", description: "Workflow source ID from list_datasets. Required when several uploads match the selected dataset." },
       dateFrom: { type: "string", description: "Inclusive ISO date, YYYY-MM-DD." },
       dateTo: { type: "string", description: "Inclusive ISO date, YYYY-MM-DD." },
       period: { type: "string", description: "A single period, YYYY-MM." },
@@ -143,7 +148,7 @@ export const queryLedger: AgentTool = {
         description: "How to aggregate. 'none' returns one overall total.",
       },
     },
-    required: [],
+    required: ["datasets"],
     additionalProperties: false,
   },
 
@@ -159,6 +164,9 @@ export const queryLedger: AgentTool = {
       );
     }
 
+    const basisError = validateAggregationBasis(args, rows);
+    if (basisError) return basisError;
+
     const groupBy = (args.groupBy as GroupBy | undefined) ?? "none";
     const groups = groupRows(rows, groupBy);
     const capped = capRows(groups, GROUP_LIMIT);
@@ -171,6 +179,8 @@ export const queryLedger: AgentTool = {
         `${rows.length} row(s) totalling ${formatCents(totalCents)}` +
         (groupBy === "none" ? "." : ` across ${groups.length} ${groupBy} group(s).`),
       data: {
+        dataset: rows[0].dataset,
+        workflowId: rows[0].workflowId,
         totalCents,
         rowCount: rows.length,
         groupBy,
@@ -205,6 +215,7 @@ export const getTransactions: AgentTool = {
     type: "object",
     properties: {
       datasets: { type: "array", items: { type: "string", enum: [...FILE_TYPES] } },
+      workflowId: { type: "string", description: "Workflow source ID from list_datasets." },
       dateFrom: { type: "string" },
       dateTo: { type: "string" },
       period: { type: "string" },
@@ -286,14 +297,15 @@ export const comparePeriods: AgentTool = {
     properties: {
       periodA: { type: "string", description: "The earlier period, YYYY-MM." },
       periodB: { type: "string", description: "The later period, YYYY-MM." },
-      datasets: { type: "array", items: { type: "string", enum: [...FILE_TYPES] } },
+      datasets: { type: "array", items: { type: "string", enum: [...FILE_TYPES] }, minItems: 1, maxItems: 1, description: "Select exactly one financial dataset; never combine actuals, budget, bank and ERP." },
+      workflowId: { type: "string", description: "Workflow source ID from list_datasets; select one source when several uploads match." },
       groupBy: {
         type: "string",
         enum: ["dataset", "counterparty", "department", "category"],
         description: "Defaults to category.",
       },
     },
-    required: ["periodA", "periodB"],
+    required: ["periodA", "periodB", "datasets"],
     additionalProperties: false,
   },
 
@@ -311,12 +323,10 @@ export const comparePeriods: AgentTool = {
     }
 
     const groupBy = (args.groupBy as GroupBy | undefined) ?? "category";
-    const datasets = args.datasets as string[] | undefined;
-    const inScope = (row: LedgerRow) =>
-      !datasets || datasets.length === 0 || datasets.includes(row.dataset);
-
-    const aRows = ctx.rows.filter((r) => inScope(r) && r.period === periodA);
-    const bRows = ctx.rows.filter((r) => inScope(r) && r.period === periodB);
+    const filtered = applyFilters(ctx.rows, args);
+    if ("error" in filtered) return filtered.error;
+    const aRows = filtered.rows.filter(r => r.period === periodA);
+    const bRows = filtered.rows.filter(r => r.period === periodB);
 
     if (aRows.length === 0 && bRows.length === 0) {
       const periods = [...new Set(ctx.rows.map((r) => r.period).filter(Boolean))].sort();
@@ -324,6 +334,11 @@ export const comparePeriods: AgentTool = {
         `Neither ${periodA} nor ${periodB} has any rows.`,
         `Periods present in the data: ${periods.join(", ") || "none"}.`,
       );
+    }
+    const basisError = validateAggregationBasis(args, [...aRows, ...bRows]);
+    if (basisError) return basisError;
+    if (aRows.length === 0 || bRows.length === 0) {
+      return fail("One comparison period has no source rows; its value is unknown, not zero.", `Load both ${periodA} and ${periodB} for the selected source before comparing their monetary totals.`);
     }
 
     const keys = new Set([...aRows, ...bRows].map((r) => groupKey(r, groupBy)));
@@ -355,6 +370,8 @@ export const comparePeriods: AgentTool = {
         `${periodA} ${formatCents(totalA)} → ${periodB} ${formatCents(totalB)} ` +
         `(${formatCents(totalB - totalA)}), across ${variances.length} ${groupBy} group(s).`,
       data: {
+        dataset: aRows[0].dataset,
+        workflowId: aRows[0].workflowId,
         periodA,
         periodB,
         totalACents: totalA,
@@ -387,6 +404,7 @@ export const findAnomalies: AgentTool = {
   parameters: {
     type: "object",
     properties: {
+      workflowId: { type: "string", description: "One workflow source ID from list_datasets. Required if the organization has multiple uploaded workflows; never match transactions across unrelated uploads." },
       detectors: {
         type: "array",
         items: {
@@ -401,6 +419,14 @@ export const findAnomalies: AgentTool = {
   },
 
   async run(args, ctx): Promise<ToolResultEnvelope> {
+    if (args.workflowId !== undefined && (typeof args.workflowId !== "string" || !args.workflowId.trim())) {
+      return fail("workflowId must be a source ID.", "Select the exact workflowId from list_datasets.");
+    }
+    const scopedRows = args.workflowId ? ctx.rows.filter(row => row.workflowId === args.workflowId) : ctx.rows;
+    if (new Set(scopedRows.map(row => row.workflowId)).size > 1) {
+      return fail("Anomaly detectors require one selected workflow source.", "Call list_datasets, then pass workflowId. Matching across overlapping or unrelated uploads can create false reconciliations and duplicate citations.");
+    }
+    ctx = { ...ctx, rows: scopedRows };
     const requested = (args.detectors as string[] | undefined) ?? [
       "reconciliation",
       "bank_duplicates",
@@ -701,6 +727,12 @@ function applyFilters(
     };
   }
 
+  if (args.datasets !== undefined && (!Array.isArray(args.datasets) || !args.datasets.every(value => typeof value === "string"))) {
+    return { error: fail("datasets must be an array of dataset names.", `Valid datasets: ${FILE_TYPES.join(", ")}.`) };
+  }
+  if (args.workflowId !== undefined && (typeof args.workflowId !== "string" || !args.workflowId.trim())) {
+    return { error: fail("workflowId must be a non-empty source ID.", "Use the exact workflowId from list_datasets.") };
+  }
   const datasets = args.datasets as string[] | undefined;
   const unknownDataset = (datasets ?? []).find(
     (d) => !(FILE_TYPES as readonly string[]).includes(d),
@@ -731,6 +763,7 @@ function applyFilters(
   const category = lower(args.category);
 
   const out = rows.filter((row) => {
+    if (args.workflowId && row.workflowId !== args.workflowId) return false;
     if (datasets && datasets.length > 0 && !datasets.includes(row.dataset)) return false;
     if (isIsoDate(dateFrom) && (row.date === null || row.date < dateFrom)) return false;
     if (isIsoDate(dateTo) && (row.date === null || row.date > dateTo)) return false;
@@ -748,6 +781,21 @@ function applyFilters(
   });
 
   return { rows: out };
+}
+
+/** Mathematical addition is only meaningful after the financial basis is unambiguous. */
+function validateAggregationBasis(args: Record<string, unknown>, rows: LedgerRow[]): ToolResultEnvelope | null {
+  if (!Array.isArray(args.datasets) || args.datasets.length !== 1 || new Set(rows.map(row => row.dataset)).size !== 1) {
+    return fail("Monetary totals require exactly one selected dataset.", "Call list_datasets, then pass datasets with one name, such as [\"erp_export\"]. Query bank, ERP, budget and actuals separately; adding them double-counts or mixes financial bases.");
+  }
+  const sources = [...new Set(rows.map(row => row.workflowId))];
+  if (sources.length > 1) {
+    return fail("Several uploaded sources match; their monetary totals cannot be safely combined.", `Pass workflowId from list_datasets to select one source. Matching workflow IDs: ${sources.slice(0, 10).join(", ")}. The data has no entity or currency metadata proving these uploads may be consolidated.`);
+  }
+  if (rows.some(row => !Number.isSafeInteger(row.amountCents)) || rows.reduce((sum, row) => sum + BigInt(Math.abs(row.amountCents)), BigInt(0)) > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return fail("These monetary totals exceed exact integer-cent arithmetic limits.", "Narrow the selected source or period. Do not estimate or use rounded floating-point totals.");
+  }
+  return null;
 }
 
 /**
@@ -810,10 +858,19 @@ function groupRows(rows: LedgerRow[], groupBy: GroupBy) {
         maxCents: Math.max(...amounts),
         // Integer cents throughout: a mean in floating point would reintroduce exactly the
         // rounding the money-as-cents rule (D7) exists to prevent.
-        meanCents: Math.round(totalCents / group.length),
+        meanCents: roundedCentsMean(totalCents, group.length),
       };
     })
     .sort((a, b) => Math.abs(b.totalCents) - Math.abs(a.totalCents));
+}
+
+function roundedCentsMean(total: number, count: number): number {
+  const numerator = BigInt(total);
+  const denominator = BigInt(count);
+  const quotient = numerator / denominator;
+  const remainder = numerator % denominator;
+  return Number(remainder * BigInt(2) >= denominator ? quotient + BigInt(1)
+    : -remainder * BigInt(2) > denominator ? quotient - BigInt(1) : quotient);
 }
 
 function sumOf(rows: LedgerRow[], groupBy: GroupBy, key: string): number {

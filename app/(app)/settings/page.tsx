@@ -1,18 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { LogOut, Cpu, ShieldCheck, ChevronRight } from "lucide-react";
+import { LogOut, Cpu, ShieldCheck, BookOpen, ChevronRight } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import type { Organization, Profile, ProfileRole } from "@/lib/types";
 
 async function signOut() {
@@ -35,7 +26,10 @@ export default async function SettingsPage() {
   } = await supabase.auth.getUser();
 
   // RLS scopes both reads to the caller's org.
-  const [{ data: orgData }, { data: membersData }] = await Promise.all([
+  const [
+    { data: orgData, error: orgError },
+    { data: membersData, error: membersError },
+  ] = await Promise.all([
     supabase
       .from("organizations")
       .select("id, name, created_at")
@@ -50,112 +44,140 @@ export default async function SettingsPage() {
   const members = (membersData ?? []) as Profile[];
 
   return (
-    <div className="mx-auto max-w-3xl px-8 py-8">
-      <header className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-muted">Organization and members.</p>
+    <div className="page-container min-w-0">
+      <header className="mb-10">
+        <h1 className="page-title">Workspace settings</h1>
+        <p className="page-description">
+          Your organization, its members, and the controls behind every
+          workflow.
+        </p>
       </header>
 
-      {/* Organization */}
-      <section className="mb-8">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm font-medium text-muted">
-              Organization
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-lg font-semibold tracking-tight">
-              {orgData?.name ?? "—"}
+      <section className="mb-10 border-y border-border py-6">
+        <h2 className="mb-2 text-sm text-muted">Organization</h2>
+        {orgError ? (
+          <p role="alert" className="text-sm text-error">
+            Unable to load organization details. Refresh this page to try again.
+          </p>
+        ) : (
+          <p className="break-words text-xl font-medium">
+            {orgData?.name ?? "No organization found"}
+          </p>
+        )}
+      </section>
+
+      <nav
+        aria-label="Workspace configuration"
+        className="mb-10 divide-y divide-border border-b border-border"
+      >
+        <Link
+          href="/settings/models"
+          className="group flex min-w-0 items-start gap-4 py-5 transition-colors hover:text-accent"
+        >
+          <Cpu
+            aria-hidden="true"
+            className="mt-1 h-5 w-5 shrink-0 text-muted"
+            strokeWidth={1.75}
+          />
+          <div className="min-w-0 flex-1">
+            <h2 className="font-medium">Models & usage</h2>
+            <p className="mt-1 text-sm leading-6 text-muted">
+              Connect providers, choose workflow models, and review model usage.
             </p>
-          </CardContent>
-        </Card>
-      </section>
-
-      {/* Models */}
-      <section className="mb-8">
-        <Link href="/settings/models" className="block">
-          <Card className="transition-colors hover:border-muted">
-            <CardContent className="flex items-center gap-4 p-4">
-              <Cpu className="h-5 w-5 text-accent" strokeWidth={1.75} />
-              <div className="flex min-w-0 flex-1 flex-col">
-                <span className="font-medium">Models</span>
-                <span className="text-xs text-muted">
-                  Configure LLM providers and per-step model assignments.
-                </span>
-              </div>
-              <ChevronRight className="h-4 w-4 text-muted" />
-            </CardContent>
-          </Card>
+          </div>
+          <ChevronRight
+            aria-hidden="true"
+            className="mt-1 h-5 w-5 shrink-0 text-muted"
+          />
         </Link>
-      </section>
-
-      {/* Approvals */}
-      <section className="mb-8">
-        <Link href="/settings/approvals" className="block">
-          <Card className="transition-colors hover:border-muted">
-            <CardContent className="flex items-center gap-4 p-4">
-              <ShieldCheck className="h-5 w-5 text-accent" strokeWidth={1.75} />
-              <div className="flex min-w-0 flex-1 flex-col">
-                <span className="font-medium">Approvals</span>
-                <span className="text-xs text-muted">
-                  Amount ceilings, approved counterparties, separation of duties, and standing
-                  rules.
-                </span>
-              </div>
-              <ChevronRight className="h-4 w-4 text-muted" />
-            </CardContent>
-          </Card>
+        <Link
+          href="/settings/approvals"
+          className="group flex min-w-0 items-start gap-4 py-5 transition-colors hover:text-accent"
+        >
+          <ShieldCheck
+            aria-hidden="true"
+            className="mt-1 h-5 w-5 shrink-0 text-muted"
+            strokeWidth={1.75}
+          />
+          <div className="min-w-0 flex-1">
+            <h2 className="font-medium">Approval controls</h2>
+            <p className="mt-1 text-sm leading-6 text-muted">
+              Set amount limits, approved counterparties, reviewer requirements,
+              and standing rules.
+            </p>
+          </div>
+          <ChevronRight
+            aria-hidden="true"
+            className="mt-1 h-5 w-5 shrink-0 text-muted"
+          />
         </Link>
+        <Link
+          href="/settings/memory"
+          className="group flex min-w-0 items-start gap-4 py-5 transition-colors hover:text-accent"
+        >
+          <BookOpen
+            aria-hidden="true"
+            className="mt-1 h-5 w-5 shrink-0 text-muted"
+            strokeWidth={1.75}
+          />
+          <div className="min-w-0 flex-1">
+            <h2 className="font-medium">Memory & history</h2>
+            <p className="mt-1 text-sm leading-6 text-muted">
+              Manage your saved preferences and find previous questions and
+              files.
+            </p>
+          </div>
+          <ChevronRight
+            aria-hidden="true"
+            className="mt-1 h-5 w-5 shrink-0 text-muted"
+          />
+        </Link>
+      </nav>
+
+      <section className="mb-10">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-medium">Members</h2>
+          <span className="text-sm text-muted">
+            {members.length} {members.length === 1 ? "member" : "members"}
+          </span>
+        </div>
+        {membersError ? (
+          <p role="alert" className="py-5 text-sm text-error">
+            Unable to load members. Refresh this page to try again.
+          </p>
+        ) : members.length === 0 ? (
+          <p className="py-5 text-sm text-muted">No members found.</p>
+        ) : (
+          <ul className="divide-y divide-border border-y border-border">
+            {members.map((m) => (
+              <li
+                key={m.id}
+                className="flex min-w-0 flex-col gap-2 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+              >
+                <p className="min-w-0 break-all text-sm">
+                  {m.email}
+                  {m.id === user?.id && (
+                    <span className="ml-2 text-muted">(you)</span>
+                  )}
+                </p>
+                <Badge
+                  className="w-fit shrink-0"
+                  variant={ROLE_VARIANT[m.role]}
+                >
+                  {m.role}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
-      {/* Members */}
-      <section className="mb-8">
-        <h2 className="mb-3 text-sm font-medium text-muted">
-          Members ({members.length})
-        </h2>
-        <Card>
-          {members.length === 0 ? (
-            <CardContent className="p-8 text-center text-sm text-muted">
-              No members found.
-            </CardContent>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Role</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {members.map((m) => (
-                  <TableRow key={m.id}>
-                    <TableCell className="font-mono text-xs">
-                      {m.email}
-                      {m.id === user?.id && (
-                        <span className="ml-2 text-muted">(you)</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={ROLE_VARIANT[m.role]}>{m.role}</Badge>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </Card>
-      </section>
-
-      {/* Sign out */}
-      <section>
-        <form action={signOut}>
-          <Button type="submit" variant="outline">
-            <LogOut className="h-4 w-4" />
-            Sign out
-          </Button>
-        </form>
-      </section>
+      <form action={signOut}>
+        <Button type="submit" variant="outline">
+          <LogOut aria-hidden="true" className="h-4 w-4" />
+          Sign out
+        </Button>
+      </form>
     </div>
   );
 }

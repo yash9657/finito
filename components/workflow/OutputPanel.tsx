@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -11,7 +11,7 @@ import {
 import { cn } from "@/lib/utils";
 import { formatCents, formatPercent } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -80,6 +80,9 @@ const AP_FLAG_LABELS: Record<ApFlagCategory, string> = {
   amount_variance: "Amount variance",
   duplicate_invoice: "Duplicate invoice",
   past_due: "Past due",
+  unapproved_po: "PO not approved",
+  non_positive_amount: "Non-positive amount",
+  low_confidence_match: "Match needs review",
 };
 
 const AP_FLAG_VARIANTS: Record<ApFlagCategory, "warning" | "error"> = {
@@ -87,6 +90,9 @@ const AP_FLAG_VARIANTS: Record<ApFlagCategory, "warning" | "error"> = {
   amount_variance: "warning",
   duplicate_invoice: "error",
   past_due: "warning",
+  unapproved_po: "error",
+  non_positive_amount: "error",
+  low_confidence_match: "warning",
 };
 
 function ReconFlagChip({ category }: { category: ExceptionCategory }) {
@@ -99,7 +105,9 @@ function ReconFlagChip({ category }: { category: ExceptionCategory }) {
 
 function ApFlagChip({ category }: { category: ApFlagCategory }) {
   return (
-    <Badge variant={AP_FLAG_VARIANTS[category]}>{AP_FLAG_LABELS[category]}</Badge>
+    <Badge variant={AP_FLAG_VARIANTS[category]}>
+      {AP_FLAG_LABELS[category]}
+    </Badge>
   );
 }
 
@@ -117,15 +125,13 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <Card>
-      <CardHeader className="flex-row items-center justify-between gap-2 p-3">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        {count !== undefined && (
-          <Badge variant="muted">{count}</Badge>
-        )}
-      </CardHeader>
-      <CardContent className="p-0">{children}</CardContent>
-    </Card>
+    <section className="min-w-0 border-t border-border pt-4">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium">{title}</h3>
+        {count !== undefined && <Badge variant="muted">{count}</Badge>}
+      </div>
+      <div className="min-w-0">{children}</div>
+    </section>
   );
 }
 
@@ -141,32 +147,46 @@ function CollapsibleSection({
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const contentId = useId();
   return (
-    <Card>
+    <section className="min-w-0 border-t border-border">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 p-3 text-left"
+        aria-expanded={open}
+        aria-controls={contentId}
+        onClick={() => setOpen((value) => !value)}
+        className="flex min-h-11 w-full items-center justify-between gap-3 py-3 text-left"
       >
         <span className="flex items-center gap-2">
           {open ? (
-            <ChevronDown className="h-4 w-4 text-muted" />
+            <ChevronDown
+              aria-hidden="true"
+              className="h-4 w-4 shrink-0 text-muted"
+            />
           ) : (
-            <ChevronRight className="h-4 w-4 text-muted" />
+            <ChevronRight
+              aria-hidden="true"
+              className="h-4 w-4 shrink-0 text-muted"
+            />
           )}
-          <span className="text-sm font-semibold">{title}</span>
+          <span className="text-sm font-medium">{title}</span>
         </span>
         {count !== undefined && <Badge variant="muted">{count}</Badge>}
       </button>
-      {open && <CardContent className="p-0">{children}</CardContent>}
-    </Card>
+      <div
+        id={contentId}
+        className={cn("min-w-0 print:block", !open && "hidden")}
+      >
+        {children}
+      </div>
+    </section>
   );
 }
 
 function EmptyRow({ span, label }: { span: number; label: string }) {
   return (
     <TableRow>
-      <TableCell colSpan={span} className="py-4 text-center text-xs text-muted">
+      <TableCell colSpan={span} className="py-4 text-center text-sm text-muted">
         {label}
       </TableCell>
     </TableRow>
@@ -187,21 +207,19 @@ function Stat({
   tone?: "accent" | "warning" | "error";
 }) {
   return (
-    <Card className="flex-1 min-w-[120px]">
-      <CardContent className="p-3">
-        <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
-        <div
-          className={cn(
-            num("mt-1 text-lg font-semibold"),
-            tone === "accent" && "text-accent",
-            tone === "warning" && "text-warning",
-            tone === "error" && "text-error",
-          )}
-        >
-          {value}
-        </div>
-      </CardContent>
-    </Card>
+    <div className="min-w-0 flex-1 basis-36 py-3">
+      <div className="text-sm text-muted">{label}</div>
+      <div
+        className={cn(
+          num("mt-2 break-all text-lg font-medium"),
+          tone === "accent" && "text-accent",
+          tone === "warning" && "text-warning",
+          tone === "error" && "text-error",
+        )}
+      >
+        {value}
+      </div>
+    </div>
   );
 }
 
@@ -264,13 +282,17 @@ function buildReconFindings(summary: ReconReportSummary): ReconFinding[] {
     });
   }
 
-  return findings.sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
+  return findings.sort(
+    (a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents),
+  );
 }
 
 function ReconStatusCallout({ summary }: { summary: ReconReportSummary }) {
   const clean = summary.status === "CLEAN";
   const exceptions =
-    summary.unmatchedErp.length + summary.unmatchedBank.length + summary.duplicates.length;
+    summary.unmatchedErp.length +
+    summary.unmatchedBank.length +
+    summary.duplicates.length;
   return (
     <div
       className={cn(
@@ -289,7 +311,8 @@ function ReconStatusCallout({ summary }: { summary: ReconReportSummary }) {
         <>
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>
-            {exceptions} exception{exceptions === 1 ? "" : "s"} need review · net difference{" "}
+            {exceptions} exception{exceptions === 1 ? "" : "s"} need review ·
+            net difference{" "}
             <span className={num("font-semibold")}>
               {formatCents(summary.netDifferenceCents)}
             </span>
@@ -302,25 +325,22 @@ function ReconStatusCallout({ summary }: { summary: ReconReportSummary }) {
 
 function FindingCard({ f }: { f: ReconFinding }) {
   return (
-    <div
-      className={cn(
-        "rounded-lg border border-border bg-card p-3",
-        f.tone === "error" ? "border-l-2 border-l-error" : "border-l-2 border-l-warning",
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
+    <div className="min-w-0 border-b border-border py-4">
+      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <ReconFlagChip category={f.category} />
-          <span className="truncate text-sm font-medium">{f.headline}</span>
+          <span className="break-words text-sm font-medium">{f.headline}</span>
         </div>
         <span className={num("shrink-0 text-sm font-semibold")}>
           {formatCents(f.amountCents)}
         </span>
       </div>
-      <p className="mt-1.5 text-xs leading-relaxed text-foreground/80">{f.explanation}</p>
-      <p className="mt-1 text-xs leading-relaxed">
+      <p className="mt-1.5 max-w-[72ch] text-sm leading-relaxed text-foreground">
+        {f.explanation}
+      </p>
+      <p className="mt-1 max-w-[72ch] text-sm leading-relaxed">
         <span className="font-medium text-accent">Recommended: </span>
-        <span className="text-foreground/80">{f.recommendation}</span>
+        <span className="text-foreground">{f.recommendation}</span>
       </p>
     </div>
   );
@@ -349,7 +369,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
     <div className="flex flex-col gap-4">
       {summary && (
         <>
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-x-6 gap-y-2 border-y border-border">
             <Stat
               label="ERP total"
               value={formatCents(summary.totals.erpAmountCents)}
@@ -377,7 +397,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-semibold">Priority exceptions</h3>
                 <Badge variant="muted">{findings.length}</Badge>
-                <span className="text-xs text-muted">most material first</span>
+                <span className="text-sm text-muted">most material first</span>
               </div>
               {findings.map((f) => (
                 <FindingCard key={f.key} f={f} />
@@ -387,7 +407,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
 
           {summary.narrative && (
             <CollapsibleSection title="Analyst narrative">
-              <p className="p-3 text-sm leading-relaxed text-foreground/90">
+              <p className="p-3 text-sm leading-relaxed text-foreground">
                 {summary.narrative}
               </p>
             </CollapsibleSection>
@@ -421,7 +441,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
                   <TableCell>
                     <Badge variant="muted">{p.confidence}</Badge>
                   </TableCell>
-                  <TableCell className="max-w-[200px] text-xs text-muted">
+                  <TableCell className="max-w-[200px] text-sm text-muted">
                     {p.matchReason}
                   </TableCell>
                 </TableRow>
@@ -451,14 +471,15 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {(summary?.unmatchedErp ?? match?.unmatchedErp ?? []).length === 0 ? (
+            {(summary?.unmatchedErp ?? match?.unmatchedErp ?? []).length ===
+            0 ? (
               <EmptyRow span={5} label="None" />
             ) : summary ? (
               summary.unmatchedErp.map((t) => (
                 <TableRow key={t.id}>
                   <TableCell className={num()}>{t.id}</TableCell>
                   <TableCell className={num()}>{t.date}</TableCell>
-                  <TableCell className="max-w-[180px] truncate text-xs">
+                  <TableCell className="min-w-36 max-w-72 whitespace-normal text-sm">
                     {t.description}
                   </TableCell>
                   <TableCell className={num("text-right")}>
@@ -476,7 +497,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
                   <TableRow key={t.id}>
                     <TableCell className={num()}>{t.id}</TableCell>
                     <TableCell className={num()}>{t.date}</TableCell>
-                    <TableCell className="max-w-[180px] truncate text-xs">
+                    <TableCell className="min-w-36 max-w-72 whitespace-normal text-sm">
                       {t.description}
                     </TableCell>
                     <TableCell className={num("text-right")}>
@@ -486,7 +507,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
                       {f ? (
                         <ReconFlagChip category={f.category} />
                       ) : (
-                        <span className="text-xs text-muted">—</span>
+                        <span className="text-sm text-muted">—</span>
                       )}
                     </TableCell>
                   </TableRow>
@@ -525,7 +546,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
                 <TableRow key={t.id}>
                   <TableCell className={num()}>{t.id}</TableCell>
                   <TableCell className={num()}>{t.date}</TableCell>
-                  <TableCell className="max-w-[180px] truncate text-xs">
+                  <TableCell className="min-w-36 max-w-72 whitespace-normal text-sm">
                     {t.description}
                   </TableCell>
                   <TableCell className={num("text-right")}>
@@ -543,7 +564,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
                   <TableRow key={t.id}>
                     <TableCell className={num()}>{t.id}</TableCell>
                     <TableCell className={num()}>{t.date}</TableCell>
-                    <TableCell className="max-w-[180px] truncate text-xs">
+                    <TableCell className="min-w-36 max-w-72 whitespace-normal text-sm">
                       {t.description}
                     </TableCell>
                     <TableCell className={num("text-right")}>
@@ -553,7 +574,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
                       {f ? (
                         <ReconFlagChip category={f.category} />
                       ) : (
-                        <span className="text-xs text-muted">—</span>
+                        <span className="text-sm text-muted">—</span>
                       )}
                     </TableCell>
                   </TableRow>
@@ -584,7 +605,7 @@ function ReconciliationOutput({ steps }: { steps: StepRow[] }) {
                 <TableRow key={t.id}>
                   <TableCell className={num()}>{t.id}</TableCell>
                   <TableCell className={num()}>{t.date}</TableCell>
-                  <TableCell className="max-w-[180px] truncate text-xs">
+                  <TableCell className="min-w-36 max-w-72 whitespace-normal text-sm">
                     {t.description}
                   </TableCell>
                   <TableCell className={num("text-right")}>
@@ -611,14 +632,14 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-x-6 gap-y-2 border-y border-border">
         <Stat
-          label="Auto-approve"
+          label="Authorized invoices"
           value={`${queue.stats.autoApproveCount}`}
           tone="accent"
         />
         <Stat
-          label="Auto-approve total"
+          label="Authorized total"
           value={formatCents(queue.stats.autoApproveAmountCents)}
         />
         <Stat
@@ -633,14 +654,10 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
       </div>
 
       {queue.narrative && (
-        <Card>
-          <CardContent className="p-3 text-sm leading-relaxed text-foreground/90">
-            {queue.narrative}
-          </CardContent>
-        </Card>
+        <p className="break-words text-sm leading-7">{queue.narrative}</p>
       )}
 
-      <Section title="Auto-approve" count={queue.autoApprove.length}>
+      <Section title="Authorized invoices" count={queue.autoApprove.length}>
         <Table>
           <TableHeader>
             <TableRow>
@@ -660,7 +677,7 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
                 <TableRow key={item.invoiceId}>
                   <TableCell className={num()}>{item.invoiceId}</TableCell>
                   <TableCell className={num()}>{item.poId}</TableCell>
-                  <TableCell className="text-xs">{item.vendor}</TableCell>
+                  <TableCell className="text-sm">{item.vendor}</TableCell>
                   <TableCell className={num("text-right")}>
                     {formatCents(item.amountCents)}
                   </TableCell>
@@ -668,7 +685,7 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
                     <Badge variant="accent">approve</Badge>
                   </TableCell>
                   {/* How the payment was authorized (Plan 3, D-A3). */}
-                  <TableCell className="text-xs text-muted">
+                  <TableCell className="text-sm text-muted">
                     {item.authorization?.source === "standing_rule"
                       ? "standing rule"
                       : item.authorization?.source === "human"
@@ -702,15 +719,13 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
                   <TableCell className={num()}>
                     {item.invoice.invoiceNumber}
                   </TableCell>
-                  <TableCell className="text-xs">
+                  <TableCell className="text-sm">
                     {item.invoice.vendorName}
                   </TableCell>
                   <TableCell className={num("text-right")}>
                     {formatCents(item.invoice.amountCents)}
                   </TableCell>
-                  <TableCell className={num()}>
-                    {item.poId ?? "—"}
-                  </TableCell>
+                  <TableCell className={num()}>{item.poId ?? "—"}</TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
                       {item.flags.length > 0 ? (
@@ -730,7 +745,7 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
                               : "not authorized"}
                         </Badge>
                       ) : (
-                        <span className="text-xs text-muted">—</span>
+                        <span className="text-sm text-muted">—</span>
                       )}
                     </div>
                   </TableCell>
@@ -749,18 +764,10 @@ function ApMatchingOutput({ steps }: { steps: StepRow[] }) {
 /* -------------------------------------------------------------------------- */
 
 function VarianceRow({ line }: { line: FpaLine }) {
-  const tone =
-    line.variancePct === null
-      ? undefined
-      : line.variancePct > 0
-        ? "text-error"
-        : line.variancePct < 0
-          ? "text-accent"
-          : undefined;
   return (
     <TableRow>
-      <TableCell className="text-xs">{line.department}</TableCell>
-      <TableCell className="text-xs">{line.category}</TableCell>
+      <TableCell className="text-sm">{line.department}</TableCell>
+      <TableCell className="text-sm">{line.category}</TableCell>
       <TableCell className={num("text-right")}>
         {formatCents(line.budgetedAmountCents)}
       </TableCell>
@@ -770,7 +777,7 @@ function VarianceRow({ line }: { line: FpaLine }) {
       <TableCell className={num("text-right")}>
         {formatCents(line.varianceCents)}
       </TableCell>
-      <TableCell className={num(cn("text-right", tone))}>
+      <TableCell className={num("text-right")}>
         {formatPercent(line.variancePct)}
       </TableCell>
     </TableRow>
@@ -793,14 +800,12 @@ function FpaOutputView({ steps }: { steps: StepRow[] }) {
   return (
     <div className="flex flex-col gap-4">
       {full?.executiveSummary && (
-        <Card>
-          <CardHeader className="p-3">
-            <CardTitle className="text-sm">Executive summary</CardTitle>
-          </CardHeader>
-          <CardContent className="p-3 pt-0 text-sm leading-relaxed text-foreground/90">
+        <section className="min-w-0 pb-4">
+          <h3 className="mb-3 font-medium">Executive summary</h3>
+          <p className="break-words text-sm leading-7">
             {full.executiveSummary}
-          </CardContent>
-        </Card>
+          </p>
+        </section>
       )}
 
       <Section title="Material variances (top 10)" count={top10.length}>
@@ -834,7 +839,7 @@ function FpaOutputView({ steps }: { steps: StepRow[] }) {
             {full.departmentSummaries.map((d) => (
               <div key={d.department} className="p-3">
                 <div className="text-sm font-semibold">{d.department}</div>
-                <p className="mt-1 text-sm leading-relaxed text-foreground/90">
+                <p className="mt-1 text-sm leading-relaxed text-foreground">
                   {d.summary}
                 </p>
               </div>
@@ -853,7 +858,7 @@ function FpaOutputView({ steps }: { steps: StepRow[] }) {
 function OutputSkeleton() {
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-x-6 gap-y-2 border-y border-border">
         {[0, 1, 2, 3].map((i) => (
           <Card key={i} className="flex-1 min-w-[120px]">
             <CardContent className="p-3">
@@ -878,7 +883,9 @@ function EmptyState() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 py-16 text-center text-muted">
       <FileText className="h-8 w-8" />
-      <p className="text-sm">The deliverable will build up here as steps complete.</p>
+      <p className="text-sm">
+        The deliverable will build up here as steps complete.
+      </p>
     </div>
   );
 }
@@ -890,9 +897,11 @@ function EmptyState() {
 export default function OutputPanel({
   workflow,
   steps,
+  report = false,
 }: {
   workflow: WorkflowRow;
   steps: StepRow[];
+  report?: boolean;
 }) {
   let body: React.ReactNode = null;
 
@@ -904,15 +913,29 @@ export default function OutputPanel({
     body = <FpaOutputView steps={steps} />;
   }
 
-  if (!body) {
-    body = workflow.status === "running" ? <OutputSkeleton /> : <EmptyState />;
+  const ready =
+    workflow.type === "ap_matching"
+      ? completedOutput(steps, 5) !== null
+      : completedOutput(steps, 3) !== null ||
+        completedOutput(steps, 5) !== null;
+  if (!body || !ready) {
+    body =
+      workflow.status === "running" ? (
+        <OutputSkeleton />
+      ) : workflow.status === "awaiting_approval" ? (
+        <p className="rounded-lg border border-border bg-card p-6 text-sm leading-6 text-muted">
+          The report will be prepared after the proposed actions below are
+          reviewed. Authorizing an invoice records the decision; it does not
+          send a payment.
+        </p>
+      ) : (
+        <EmptyState />
+      );
   }
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto p-4">
-      <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted">
-        Deliverable
-      </h2>
+    <div className={cn("flex min-w-0 flex-col print:p-0", !report && "p-4")}>
+      <h2 className="mb-5 text-lg font-medium">Results</h2>
       {body}
     </div>
   );

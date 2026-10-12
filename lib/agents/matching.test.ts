@@ -10,6 +10,8 @@ import {
   jaccard,
   tokenize,
   withinTolerance,
+  withinPoTolerance,
+  poToleranceAllowanceCents,
   reconcile,
   detectBankDuplicates,
   nearestMiss,
@@ -17,6 +19,7 @@ import {
   matchAp,
   detectDuplicateInvoices,
   RECON_STOPWORDS,
+  MAX_MATCH_ROW_PAIRS,
 } from "@/lib/agents/matching";
 
 /* -------------------------------------------------------------------------- */
@@ -184,7 +187,7 @@ describe("reconcile — bank duplicate detection", () => {
     const erpRows = [erp("erp-001", "2026-06-10", "Acme Cloud Services", 125_000)];
     const bankRows = [
       bank("bank-001", "2026-06-11", "Acme Cloud Services", 125_000),
-      bank("bank-002", "2026-06-11", "Acme Cloud Services", 125_000), // exact duplicate
+      { ...bank("bank-002", "2026-06-11", "Acme Cloud Services", 125_000), transactionId: "TXN-bank-001" }, // repeated source transaction
     ];
 
     const res = reconcile(erpRows, bankRows);
@@ -202,11 +205,19 @@ describe("reconcile — bank duplicate detection", () => {
   it("detectBankDuplicates keeps the first occurrence unique", () => {
     const { duplicates, unique } = detectBankDuplicates([
       bank("bank-001", "2026-06-01", "Vendor A", 10_000),
-      bank("bank-002", "2026-06-01", "Vendor A", 10_000),
+      { ...bank("bank-002", "2026-06-01", "Vendor A", 10_000), transactionId: "TXN-bank-001" },
       bank("bank-003", "2026-06-02", "Vendor B", 20_000),
     ]);
     expect(unique.map((b) => b.id)).toEqual(["bank-001", "bank-003"]);
     expect(duplicates.map((d) => d.id)).toEqual(["bank-002"]);
+  });
+
+  it("does not erase legitimate identical payments with distinct or missing source IDs", () => {
+    const rows = [bank("a", "2026-06-01", "Vendor A", 10000), bank("b", "2026-06-01", "Vendor A", 10000)];
+    expect(detectBankDuplicates(rows).unique).toHaveLength(2);
+    expect(detectBankDuplicates(rows.map((row) => ({ ...row, transactionId: "" }))).duplicates).toHaveLength(0);
+    const result = reconcile([erp("e", "2026-06-01", "Vendor A", 10000)], rows);
+    expect(result.unmatchedBank).toHaveLength(1);
   });
 });
 
@@ -284,6 +295,18 @@ describe("withinTolerance — 2% boundary", () => {
 describe("matchAp — 2% tolerance in the matcher", () => {
   const pos = [po("po-001", "Acme Cloud Services Inc", "cloud hosting subscription", 1_000_000, "2026-06-01")];
 
+  it("uses the PO base for overages and never rounds a fractional cent upward", () => {
+    expect(withinPoTolerance(10200, 10000, 0.02)).toBe(true);
+    expect(withinPoTolerance(10201, 10000, 0.02)).toBe(false);
+    expect(withinPoTolerance(10204, 10000, 0.02)).toBe(false);
+    expect(poToleranceAllowanceCents(99, 0.02)).toBe(1);
+    expect(withinPoTolerance(101, 99, 0.02)).toBe(false);
+    expect(poToleranceAllowanceCents(100000000, 1e-8)).toBe(1);
+    expect(withinPoTolerance(0, 100, 0.02)).toBe(false);
+    expect(withinPoTolerance(-100, 100, 0.02)).toBe(false);
+    expect(poToleranceAllowanceCents(100, Number.NaN)).toBeNull();
+  });
+
   it("matches an invoice at exactly 2% variance (with line-item overlap)", () => {
     const invoices = [
       invoice("inv-001", "Acme Cloud Services, Inc.", "cloud hosting subscription", 980_000, "2026-06-05"),
@@ -322,6 +345,21 @@ describe("matchAp — 2% tolerance in the matcher", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("detectDuplicateInvoices", () => {
+  it("keeps the first source occurrence when dates are out of order", () => {
+    const invoices = [
+      invoice("a", "Acme", "Services", 100, "2026-02-01"),
+      invoice("b", "Acme", "Services", 100, "2026-01-05"),
+      invoice("c", "Acme", "Services", 100, "2026-01-20"),
+    ];
+    expect(detectDuplicateInvoices(invoices)).toEqual([{ id: "b", duplicateOf: "a" }, { id: "c", duplicateOf: "a" }]);
+  });
+  it("flags same-vendor invoice-number resubmissions across different dates and amounts", () => {
+    const original = invoice("inv-001", "Acme Inc", "cloud hosting", 500000, "2026-01-01");
+    original.invoiceNumber = "INV-100";
+    const repeated = { ...original, id: "inv-002", invoiceNumber: " inv 100 ", invoiceDate: "2026-06-01", amountCents: 700000 };
+    expect(detectDuplicateInvoices([original, repeated])).toEqual([{ id: "inv-002", duplicateOf: "inv-001" }]);
+    expect(detectDuplicateInvoices([original, { ...repeated, vendorName: "Different vendor" }])).toEqual([]);
+  });
   it("flags same vendor+amount within 30 days as a duplicate of the first", () => {
     const invoices = [
       invoice("inv-001", "Acme Inc", "cloud hosting", 500_000, "2026-06-01"),
@@ -345,5 +383,13 @@ describe("detectDuplicateInvoices", () => {
       invoice("inv-002", "Acme Inc", "cloud hosting", 500_100, "2026-06-05"),
     ];
     expect(detectDuplicateInvoices(invoices)).toEqual([]);
+  });
+});
+
+describe("bounded matching workload", () => {
+  it("rejects oversized jobs before enumerating candidate pairs", () => {
+    const size = Math.ceil(Math.sqrt(MAX_MATCH_ROW_PAIRS)) + 1;
+    expect(() => reconcile(new Array(size), new Array(size))).toThrow(/row-pair limit/);
+    expect(() => matchAp(new Array(size), new Array(size))).toThrow(/row-pair limit/);
   });
 });

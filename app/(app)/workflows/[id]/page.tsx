@@ -6,6 +6,7 @@ import { LiveWorkflowView } from "@/components/workflow/LiveWorkflowView";
 import OutputPanel from "@/components/workflow/OutputPanel";
 import ApprovalPanel from "@/components/workflow/ApprovalPanel";
 import ReviewBanner from "@/components/workflow/ReviewBanner";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { WorkflowStatus } from "@/lib/types";
@@ -44,7 +45,7 @@ const STATUS_LABEL: Record<WorkflowStatus, string> = {
 
 function LoadingSkeleton() {
   return (
-    <div className="grid h-full grid-cols-[420px_1fr]">
+    <div className="grid min-h-[60vh] lg:grid-cols-[360px_minmax(0,1fr)]">
       <div className="flex flex-col gap-3 border-r border-border p-4">
         <Skeleton className="h-6 w-40" />
         {Array.from({ length: 5 }).map((_, i) => (
@@ -53,7 +54,7 @@ function LoadingSkeleton() {
       </div>
       <div className="flex flex-col gap-4 p-6">
         <Skeleton className="h-8 w-56" />
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-20 w-full" />
           ))}
@@ -80,6 +81,9 @@ export default function WorkflowPage({
           <p className="font-mono text-sm text-error">
             {error?.message ?? "Failed to load workflow."}
           </p>
+          <Button variant="outline" className="mt-4" onClick={refetch}>
+            Try again
+          </Button>
         </div>
       </div>
     );
@@ -89,13 +93,22 @@ export default function WorkflowPage({
   const actions = data.actions ?? [];
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-border px-6 py-3">
+    <div className="flex min-h-[calc(100dvh_-_64px)] flex-col">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-3">
         <div className="flex flex-col">
           <h1 className="text-base font-semibold tracking-tight">
             {workflow.name}
           </h1>
-          <span className="font-mono text-xs text-muted">{workflow.type}</span>
+          <span className="font-mono text-xs text-muted">
+            {
+              {
+                reconciliation: "Reconciliation",
+                ap_matching: "Invoice matching",
+                fpa_commentary: "Variance analysis",
+                investigation: "Investigation",
+              }[workflow.type]
+            }
+          </span>
         </div>
         <Badge variant={STATUS_VARIANT[workflow.status]}>
           {workflow.status === "running" && (
@@ -107,19 +120,61 @@ export default function WorkflowPage({
 
       {/* Each panel owns its own internal scroll (overflow-hidden here bounds the row
           so an expanded StepCard scrolls inside the panel, not the whole page). */}
-      <div className="grid min-h-0 flex-1 grid-cols-[420px_1fr]">
-        <div className="min-h-0 overflow-hidden border-r border-border">
-          <LiveWorkflowView steps={steps} />
+      {error && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-3 border-b border-warning/30 bg-warning/5 px-6 py-3 text-sm text-warning"
+        >
+          Status could not refresh. Showing the last available result.{" "}
+          <Button variant="outline" size="sm" onClick={refetch}>
+            Retry
+          </Button>
         </div>
-        <div className="min-h-0 overflow-hidden">
-          <OutputPanel workflow={workflow} steps={steps} />
+      )}
+      {workflow.status === "awaiting_approval" && (
+        <ApprovalPanel
+          canReview={data.viewer?.canReview ?? false}
+          workflow={workflow}
+          actions={actions}
+          steps={steps}
+          onDecided={refetch}
+        />
+      )}
+      {workflow.status === "awaiting_approval" ? (
+        <details className="m-4 border-t border-border pt-4">
+          <summary className="min-h-11 cursor-pointer text-sm text-muted">
+            View completed analysis and execution details
+          </summary>
+          <div className="grid lg:grid-cols-[360px_minmax(0,1fr)]">
+            <LiveWorkflowView steps={steps} />
+            <OutputPanel workflow={workflow} steps={steps} />
+          </div>
+        </details>
+      ) : (
+        <div className="grid min-h-0 flex-1 lg:grid-cols-[360px_minmax(0,1fr)]">
+          <div className="min-h-0 min-w-0 border-b border-border lg:border-b-0 lg:border-r">
+            <LiveWorkflowView steps={steps} />
+          </div>
+          <div className="min-h-0 min-w-0 overflow-x-auto">
+            <OutputPanel workflow={workflow} steps={steps} />
+          </div>
         </div>
-      </div>
-
-      {/* Per-action authorization (Plan 3 §6) sits above the end-of-run review gate:
-          consequential actions are decided before they happen, the deliverable after. */}
-      <ApprovalPanel workflow={workflow} actions={actions} onDecided={refetch} />
-      <ReviewBanner workflow={workflow} review={review} onDecided={refetch} />
+      )}
+      {workflow.status !== "awaiting_approval" && (
+        <ApprovalPanel
+          canReview={data.viewer?.canReview ?? false}
+          workflow={workflow}
+          actions={actions}
+          steps={steps}
+          onDecided={refetch}
+        />
+      )}
+      <ReviewBanner
+        canReview={data.viewer?.canReview ?? false}
+        workflow={workflow}
+        review={review}
+        onDecided={refetch}
+      />
     </div>
   );
 }

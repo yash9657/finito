@@ -3,6 +3,7 @@
  * Default-model strings are pre-fill hints only — users can edit them.
  */
 
+import { FIREWORKS_DEFAULT_MODEL } from "@/lib/llm/fireworks-config";
 import type { ProviderIdValue } from "@/lib/types";
 
 export interface ProviderMeta {
@@ -14,6 +15,7 @@ export interface ProviderMeta {
 }
 
 export const PROVIDER_META: Record<ProviderIdValue, ProviderMeta> = {
+  fireworks: { id: "fireworks", label: "Fireworks AI", defaultModel: FIREWORKS_DEFAULT_MODEL, needsKey: true, needsBaseUrl: false },
   anthropic: { id: "anthropic", label: "Anthropic", defaultModel: "claude-sonnet-4-6", needsKey: true, needsBaseUrl: false },
   openai: { id: "openai", label: "OpenAI", defaultModel: "gpt-4.1", needsKey: true, needsBaseUrl: false },
   google: { id: "google", label: "Google Gemini", defaultModel: "gemini-2.5-pro", needsKey: true, needsBaseUrl: false },
@@ -22,6 +24,7 @@ export const PROVIDER_META: Record<ProviderIdValue, ProviderMeta> = {
 };
 
 export const PROVIDER_ORDER: ProviderIdValue[] = [
+  "fireworks",
   "anthropic",
   "openai",
   "google",

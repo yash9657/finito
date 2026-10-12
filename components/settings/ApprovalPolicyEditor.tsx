@@ -13,20 +13,24 @@
 import * as React from "react";
 import { Loader2, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { formatCents, formatDateTime } from "@/lib/format";
 import type { ApprovalPolicy } from "@/lib/types";
 
 function centsToInput(cents: number | null): string {
-  return cents === null ? "" : (cents / 100).toFixed(2);
+  if (cents === null) return "";
+  const value = BigInt(cents);
+  return `${value / BigInt(100)}.${String(value % BigInt(100)).padStart(2, "0")}`;
 }
 
 function inputToCents(value: string): number | null | "invalid" {
   const trimmed = value.trim().replace(/[$,]/g, "");
   if (trimmed.length === 0) return null;
-  const n = Number(trimmed);
-  if (!Number.isFinite(n) || n <= 0) return "invalid";
-  return Math.round(n * 100);
+  if (!/^\d+(?:\.\d{1,2})?$/.test(trimmed)) return "invalid";
+  const [whole, fraction = ""] = trimmed.split(".");
+  const cents = BigInt(whole) * BigInt(100) + BigInt(fraction.padEnd(2, "0"));
+  if (cents <= BigInt(0) || cents > BigInt(Number.MAX_SAFE_INTEGER))
+    return "invalid";
+  return Number(cents);
 }
 
 export default function ApprovalPolicyEditor({
@@ -38,25 +42,36 @@ export default function ApprovalPolicyEditor({
   isAdmin: boolean;
   onSaved: () => void;
 }) {
-  const [hardDeny, setHardDeny] = React.useState(centsToInput(policy.hard_deny_above_cents));
-  const [autoMax, setAutoMax] = React.useState(centsToInput(policy.auto_approve_max_cents));
-  const [requireKnown, setRequireKnown] = React.useState(policy.require_known_counterparty);
+  const [hardDeny, setHardDeny] = React.useState(
+    centsToInput(policy.hard_deny_above_cents),
+  );
+  const [autoMax, setAutoMax] = React.useState(
+    centsToInput(policy.auto_approve_max_cents),
+  );
+  const [requireKnown, setRequireKnown] = React.useState(
+    policy.require_known_counterparty,
+  );
   const [counterparties, setCounterparties] = React.useState(
     policy.approved_counterparties.join("\n"),
   );
-  const [separateApprover, setSeparateApprover] = React.useState(policy.require_separate_approver);
+  const [separateApprover, setSeparateApprover] = React.useState(
+    policy.require_separate_approver,
+  );
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [saved, setSaved] = React.useState(false);
 
   async function save() {
+    if (saving || !isAdmin) return;
     setError(null);
     setSaved(false);
 
     const hard = inputToCents(hardDeny);
     const auto = inputToCents(autoMax);
     if (hard === "invalid" || auto === "invalid") {
-      setError("Ceilings must be positive dollar amounts, or blank for no ceiling.");
+      setError(
+        "Enter positive USD amounts with no more than two decimal places. Leave a field blank for no limit.",
+      );
       return;
     }
 
@@ -76,8 +91,11 @@ export default function ApprovalPolicyEditor({
           require_separate_approver: separateApprover,
         }),
       });
-      const body = (await res.json().catch(() => null)) as { error?: string } | null;
-      if (!res.ok) throw new Error(body?.error ?? `Save failed (${res.status})`);
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      if (!res.ok)
+        throw new Error(body?.error ?? `Save failed (${res.status})`);
       setSaved(true);
       onSaved();
     } catch (e) {
@@ -88,100 +106,126 @@ export default function ApprovalPolicyEditor({
   }
 
   return (
-    <Card>
-      <CardContent className="flex flex-col gap-5 p-5">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Hard deny above</span>
-            <input
-              value={hardDeny}
-              onChange={(e) => setHardDeny(e.target.value)}
-              disabled={!isAdmin}
-              inputMode="decimal"
-              placeholder="no ceiling"
-              className="h-9 rounded-md border border-border bg-card px-3 font-mono text-sm text-foreground disabled:opacity-60"
-            />
-            <span className="text-xs text-muted">
-              Actions above this are denied outright. No approval anywhere in the product can
-              release them.
-            </span>
-          </label>
-
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium">Auto-approve only up to</span>
-            <input
-              value={autoMax}
-              onChange={(e) => setAutoMax(e.target.value)}
-              disabled={!isAdmin}
-              inputMode="decimal"
-              placeholder="no ceiling"
-              className="h-9 rounded-md border border-border bg-card px-3 font-mono text-sm text-foreground disabled:opacity-60"
-            />
-            <span className="text-xs text-muted">
-              A standing rule never fires above this — those actions still reach a person.
-            </span>
-          </label>
-        </div>
-
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+      className="flex flex-col gap-6 border-y border-border py-6"
+    >
+      <div className="grid gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-1.5">
-          <span className="flex items-center gap-2 text-sm font-medium">
-            <input
-              type="checkbox"
-              checked={requireKnown}
-              disabled={!isAdmin}
-              onChange={(e) => setRequireKnown(e.target.checked)}
-              className="h-3.5 w-3.5 accent-[var(--accent)]"
-            />
-            Only allow approved counterparties
-          </span>
-          <textarea
-            value={counterparties}
-            onChange={(e) => setCounterparties(e.target.value)}
-            disabled={!isAdmin}
-            rows={4}
-            placeholder={"One name per line\nAcme Supplies\nGlobex"}
-            className="rounded-md border border-border bg-card px-3 py-2 font-mono text-sm text-foreground disabled:opacity-60"
+          <span className="text-sm font-medium">Block actions above (USD)</span>
+          <input
+            value={hardDeny}
+            onChange={(e) => setHardDeny(e.target.value)}
+            disabled={!isAdmin || saving}
+            inputMode="decimal"
+            placeholder="No limit"
+            className="min-h-11 w-full rounded-md border border-border bg-background px-3 font-mono text-base text-foreground disabled:opacity-60 sm:text-sm"
           />
-          <span className="text-xs text-muted">
-            When on, an action to a name that is not on this list is denied — not queued for
-            approval. Matching ignores case and extra spaces, nothing more.
+          <span className="text-sm leading-6 text-muted">
+            Actions above this amount are blocked, including actions reviewed by
+            an administrator.
           </span>
         </label>
 
         <label className="flex flex-col gap-1.5">
-          <span className="flex items-center gap-2 text-sm font-medium">
-            <input
-              type="checkbox"
-              checked={separateApprover}
-              disabled={!isAdmin}
-              onChange={(e) => setSeparateApprover(e.target.checked)}
-              className="h-3.5 w-3.5 accent-[var(--accent)]"
-            />
-            Require a separate approver
+          <span className="text-sm font-medium">
+            Standing rules apply up to (USD)
           </span>
-          <span className="text-xs text-muted">
-            Four eyes: whoever launched a run cannot authorize its actions.
+          <input
+            value={autoMax}
+            onChange={(e) => setAutoMax(e.target.value)}
+            disabled={!isAdmin || saving}
+            inputMode="decimal"
+            placeholder="No limit"
+            className="min-h-11 w-full rounded-md border border-border bg-background px-3 font-mono text-base text-foreground disabled:opacity-60 sm:text-sm"
+          />
+          <span className="text-sm leading-6 text-muted">
+            Above this amount, a person must review each action even when a
+            standing rule matches.
           </span>
         </label>
+      </div>
 
-        {error && <p className="font-mono text-xs text-error">{error}</p>}
+      <div className="flex flex-col gap-2">
+        <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm font-medium">
+          <input
+            type="checkbox"
+            checked={requireKnown}
+            disabled={!isAdmin || saving}
+            onChange={(e) => setRequireKnown(e.target.checked)}
+            className="h-5 w-5 shrink-0 accent-[var(--accent)]"
+          />
+          Only allow approved counterparties
+        </label>
+        <label htmlFor="approved-counterparties" className="text-sm text-muted">
+          Approved names, one per line
+        </label>
+        <textarea
+          id="approved-counterparties"
+          value={counterparties}
+          onChange={(e) => setCounterparties(e.target.value)}
+          disabled={!isAdmin || saving}
+          rows={4}
+          placeholder={"One name per line\nAcme Supplies\nGlobex"}
+          className="w-full rounded-md border border-border bg-background px-3 py-3 text-base text-foreground disabled:opacity-60 sm:text-sm"
+        />
+        <span className="text-sm leading-6 text-muted">
+          When on, an action to a name that is not on this list is denied — not
+          queued for approval. Names match exactly, ignoring capitalization and
+          extra spaces.
+        </span>
+      </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          {isAdmin && (
-            <Button variant="accent" onClick={save} disabled={saving}>
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              Save ceilings
-            </Button>
-          )}
-          {saved && <span className="font-mono text-xs text-accent">saved</span>}
-          <span className="font-mono text-xs text-muted">
-            {policy.hard_deny_above_cents !== null
-              ? `denying above ${formatCents(policy.hard_deny_above_cents)}`
-              : "no hard ceiling set"}
-            {policy.updated_at ? ` · updated ${formatDateTime(policy.updated_at)}` : ""}
+      <label className="flex min-h-11 cursor-pointer flex-col gap-1.5">
+        <span className="flex items-center gap-2 text-sm font-medium">
+          <input
+            type="checkbox"
+            checked={separateApprover}
+            disabled={!isAdmin || saving}
+            onChange={(e) => setSeparateApprover(e.target.checked)}
+            className="h-5 w-5 shrink-0 accent-[var(--accent)]"
+          />
+          Require a separate approver
+        </span>
+        <span className="text-sm leading-6 text-muted">
+          The person who launched a workflow cannot authorize its actions.
+        </span>
+      </label>
+
+      {error && (
+        <p role="alert" className="text-sm text-error">
+          {error}
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        {isAdmin && (
+          <Button type="submit" variant="accent" disabled={saving}>
+            {saving ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            {saving ? "Saving…" : "Save organization limits"}
+          </Button>
+        )}
+        {saved && (
+          <span role="status" className="text-sm text-accent">
+            Organization limits saved.
           </span>
-        </div>
-      </CardContent>
-    </Card>
+        )}
+        <span className="text-sm leading-6 text-muted">
+          {policy.hard_deny_above_cents !== null
+            ? `Current limit: ${formatCents(policy.hard_deny_above_cents)}`
+            : "No blocking amount limit is set"}
+          {policy.updated_at
+            ? ` · updated ${formatDateTime(policy.updated_at)}`
+            : ""}
+        </span>
+      </div>
+    </form>
   );
 }

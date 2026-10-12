@@ -28,11 +28,11 @@ export function WorkflowTrack({ steps }: { steps: StepRow[] }) {
     <div className="space-y-0">
       {hasParallel && (
         <>
-          <div className="flex items-start gap-3">
+          <div className="grid gap-3">
             {parallelTracks.map((g) => (
               <div key={g.track} className="min-w-0 flex-1 space-y-2">
-                <div className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
-                  Track {g.track}
+                <div className="px-1 text-xs font-medium text-muted">
+                  Source {g.track}
                 </div>
                 {g.steps.map((step) => (
                   <StepCard key={step.id} step={step} />
@@ -54,8 +54,8 @@ export function WorkflowTrack({ steps }: { steps: StepRow[] }) {
       {mainSteps.length > 0 && (
         <div className="space-y-2">
           {hasParallel && (
-            <div className="px-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
-              Main
+            <div className="px-1 text-xs font-medium text-muted">
+              Analysis
             </div>
           )}
           {mainSteps.map((step) => (

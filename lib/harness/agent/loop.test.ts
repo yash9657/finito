@@ -20,10 +20,11 @@ interface ScriptedTurn {
   toolCalls?: { id: string; name: string; arguments: Record<string, unknown> }[];
   tokensIn?: number;
   tokensOut?: number;
+  cachedTokensIn?: number;
 }
 
 const script: ScriptedTurn[] = [];
-let dispatchCalls: { stepKey: string; toolNames: string[]; toolCount: number }[] = [];
+let dispatchCalls: { stepKey: string; toolNames: string[]; toolCount: number; maxTokens?: number; signal?: AbortSignal; sessionId?: string }[] = [];
 let capabilityOverride: Partial<{ toolCalling: boolean; contextWindow: number; parallelToolCalls: boolean }> = {};
 let resolutionFailure: string | null = null;
 
@@ -45,11 +46,14 @@ vi.mock("@/lib/llm/router", () => ({
       },
     };
   }),
-  dispatchTools: vi.fn(async (_db: unknown, args: { stepKey: string; tools: { name: string }[] }) => {
+  dispatchTools: vi.fn(async (_db: unknown, args: { stepKey: string; tools: { name: string }[]; maxTokens?: number; signal?: AbortSignal; sessionId?: string }) => {
     dispatchCalls.push({
       stepKey: args.stepKey,
       toolNames: args.tools.map((t) => t.name),
       toolCount: args.tools.length,
+      maxTokens: args.maxTokens,
+      signal: args.signal,
+      sessionId: args.sessionId,
     });
     const turn = script.shift() ?? { content: "" };
     return {
@@ -62,6 +66,7 @@ vi.mock("@/lib/llm/router", () => ({
         modelUsed: "claude-opus-5",
         tokensIn: turn.tokensIn ?? 100,
         tokensOut: turn.tokensOut ?? 50,
+        cachedTokensIn: turn.cachedTokensIn,
         latencyMs: 10,
         raw: {},
       },
@@ -79,8 +84,10 @@ vi.mock("@/lib/llm/router", () => ({
   }),
 }));
 
-import { runInvestigation, clampBudget, BUDGET_CEILINGS } from "@/lib/harness/agent/loop";
+import { runInvestigation, clampBudget, BUDGET_CEILINGS, finalEvidenceMessages } from "@/lib/harness/agent/loop";
+import { assistantMessage, toolResultMessage, userMessage } from "@/lib/llm/messages";
 import { loadFixtureDatasets, makeFakeDb, FIXTURE_WORKFLOW_ID } from "@/lib/harness/agent/fixtures";
+import { sourceFixture } from "@/lib/harness/agent/source-fixtures";
 
 const datasets = loadFixtureDatasets(["erp_export", "bank_statement"]);
 /** The whole demo set, for the recommendation-cap test — it needs real invoices and POs. */
@@ -127,9 +134,54 @@ afterEach(() => {
 /* -------------------------------------------------------------------------- */
 
 describe("a complete investigation", () => {
+  it("reserves finalization budget and produces a validated partial answer before more exploration", async () => {
+    script.push(
+      { content: "Checking source totals.", toolCalls: [{ id: "budget-source", name: "query_ledger", arguments: { datasets: ["erp_export"] } }], tokensIn: 18_000, tokensOut: 100 },
+      { content: answerJson() },
+    );
+    const outcome = await run({ maxTokens: 30_000 }).promise;
+    expect(outcome.reason).toBe("max_tokens");
+    expect(outcome.answer?.partial).toBe(true);
+    expect(outcome.answer?.figures.length).toBeGreaterThan(0);
+    expect(dispatchCalls.map((call) => call.stepKey)).toEqual(["investigate", "investigate_answer"]);
+    expect(outcome.tokensIn + outcome.tokensOut).toBeLessThan(30_000);
+  });
+
+  it("finalizes from bounded tool evidence rather than repeated generated programs and drafts", () => {
+    const observation = toolResultMessage([{ toolCallId: "c1", name: "read_source_rows", content: JSON.stringify({ sourceId: sourceFixture.tables[0].rows[0].sourceId, Amount: "100.15" }) }]);
+    const messages = finalEvidenceMessages([
+      userMessage("What is the amount?"),
+      assistantMessage("DRAFT that is not final evidence", [{ id: "c1", name: "run_analysis", arguments: { code: "UNTRUSTED GENERATED PROGRAM" } }]),
+      observation, observation,
+    ]);
+    const text = messages.map((message) => message.content).join("\n");
+    expect(text).toContain(sourceFixture.tables[0].rows[0].sourceId);
+    expect(text).toContain("100.15");
+    expect(text).not.toContain("UNTRUSTED GENERATED PROGRAM");
+    expect(text).not.toContain("DRAFT");
+    expect(text.match(/TOOL read_source_rows/g)).toHaveLength(1);
+  });
+  it("inspects unfamiliar columns, repairs code, and attaches an actual calculation to a cited answer", async () => {
+    const sourceIds = sourceFixture.tables[0].rows.map((row) => row.sourceId);
+    const selection = { sourceId: sourceFixture.id, tableId: "t0" };
+    script.push(
+      { content: "Inspecting the unfamiliar source.", toolCalls: [{ id: "g1", name: "inspect_source", arguments: selection }] },
+      { content: "Computing the source amounts.", toolCalls: [{ id: "g2", name: "run_analysis", arguments: { title: "Source total", tables: [selection], code: "return missingVariable;" } }] },
+      { content: "Correcting the calculation after the reported reference error.", toolCalls: [{ id: "g3", name: "run_analysis", arguments: { title: "Source total", tables: [selection], code: "return {result:{total:decimal.sum(tables[0].rows.map(r=>r.values.Amount))},sourceIds:tables[0].rows.map(r=>r.sourceId)};" } }] },
+      { content: "The calculation is complete." },
+      { content: JSON.stringify({ prose: "The selected Amount column totals {{total}}.", findings: [{ statement: "The amount column contains three records.", sourceIds }], figures: [{ ref: "total", label: "Source total", operation: "sum", column: "Amount", sourceIds }], citations: [{ sourceId: sourceIds[0], note: "Source row" }] }) },
+    );
+    const { db, state } = makeFakeDb();
+    const outcome = await runInvestigation({ db, workflowId: FIXTURE_WORKFLOW_ID, orgId: "org-1", question: "What is the source total?", history: [{ question: "Which columns exist?", answer: "Amount and region; verify from source." }], datasets: { rows: [], summaries: [], unreadable: [] }, dataSources: [sourceFixture] });
+    expect(outcome.status).toBe("answered");
+    expect(outcome.answer?.prose).toContain("128.45 (source units)");
+    expect(outcome.answer?.analyses).toHaveLength(1);
+    expect(outcome.answer?.analyses?.[0].output).toEqual({ total: "128.45" });
+    expect(state.events.filter((event) => event.eventType === "tool_returned")).toHaveLength(3);
+  }, 15_000);
   it("calls tools, then answers with figures computed in code", async () => {
     script.push(
-      { content: "Let me see what data exists.", toolCalls: [{ id: "c1", name: "list_datasets", arguments: {} }] },
+      { content: "Let me see what data exists.", cachedTokensIn: 80, toolCalls: [{ id: "c1", name: "list_datasets", arguments: {} }] },
       {
         content: "Now the ERP totals.",
         toolCalls: [{ id: "c2", name: "query_ledger", arguments: { datasets: ["erp_export"] } }],
@@ -157,6 +209,15 @@ describe("a complete investigation", () => {
     expect(types).toContain("tool_called");
     expect(types).toContain("tool_returned");
     expect(types).toContain("agent_answered");
+    const usage = state.events.filter(e => e.eventType === "observation_received" && e.payload.kind === "model_usage");
+    expect(usage).toHaveLength(dispatchCalls.length);
+    expect(usage[0]?.payload.cached_tokens_in).toBe(80);
+    expect(outcome.tokensIn).toBe(dispatchCalls.length * 100);
+    expect(usage.at(-1)?.payload).toMatchObject({ tokens_in: 100, tokens_out: 50, latency_ms: 10 });
+    expect(dispatchCalls.every(call => call.sessionId === FIXTURE_WORKFLOW_ID)).toBe(true);
+    const selection = state.events.find(e => e.eventType === "agent_turn_started")?.payload.memory_context;
+    expect(selection).toMatchObject({ estimated_tokens: 0, included_count: 0, dropped_count: 0 });
+    expect(JSON.stringify(selection)).not.toContain("questionExcerpt");
   });
 
   it("pairs every observation with the action that caused it (D-G9)", async () => {
@@ -245,6 +306,25 @@ describe("bounds — it always terminates, and always says why (D-G22)", () => {
 
     const outcome = await run({ maxTokens: 12_000 }).promise;
     expect(outcome.reason).toBe("max_tokens");
+  });
+
+  it("does not issue a final answer call after the investigating turn exhausts its budget", async () => {
+    script.push({ content: "Ready to answer", tokensIn: 11_000, tokensOut: 1_000 }, { content: answerJson() });
+    const outcome = await run({ maxTokens: 12_000 }).promise;
+    expect(outcome.reason).toBe("max_tokens");
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0].maxTokens).toBeLessThan(12_000);
+    expect(dispatchCalls[0].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("does not issue an answer correction after its budget is exhausted", async () => {
+    script.push({ content: "Ready", tokensIn: 500, tokensOut: 500 }, { content: "invalid JSON", tokensIn: 28_000, tokensOut: 1_000 }, { content: answerJson() });
+    const outcome = await run({ maxTokens: 30_000 }).promise;
+    expect(outcome.reason).toBe("max_tokens");
+    expect(dispatchCalls.filter(call => call.stepKey === "investigate_answer")).toHaveLength(1);
+    expect(outcome.answer?.partial).toBe(true);
+    expect(outcome.answer?.prose).toContain("budget");
+    expect(outcome.answer?.prose).not.toContain("invalid JSON");
   });
 
   it("caps recommendations for the whole run, not just per turn", async () => {
@@ -393,7 +473,7 @@ describe("compaction inside the loop (D-G22)", () => {
     script.push({ content: "{}" }, { content: answerJson() });
 
     const { state, promise } = run({ maxTurns: 6 });
-    await promise;
+    const outcome = await promise;
 
     const compacted = state.events.find((e) => e.eventType === "context_compacted");
     expect(compacted).toBeTruthy();
@@ -401,6 +481,8 @@ describe("compaction inside the loop (D-G22)", () => {
     expect(Number(compacted?.payload.estimated_tokens_after)).toBeLessThan(
       Number(compacted?.payload.estimated_tokens_before),
     );
+    expect(dispatchCalls.some(call => call.stepKey === "investigate_compact")).toBe(true);
+    expect(outcome.tokensIn + outcome.tokensOut).toBe(dispatchCalls.length * 150);
   });
 });
 
@@ -473,4 +555,3 @@ describe("clampBudget", () => {
     expect(clampBudget({ maxTurns: Number.NaN }).maxTurns).toBe(1);
   });
 });
-

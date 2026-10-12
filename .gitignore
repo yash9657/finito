@@ -40,3 +40,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local visual QA and Python cache
+/.impeccable/review/
+__pycache__/
+
+# Supabase local link state
+/supabase/.temp/

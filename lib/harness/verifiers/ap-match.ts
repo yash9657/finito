@@ -12,6 +12,7 @@
  */
 
 import { fail, pass, type Verifier, type VerificationVerdict } from "@/lib/harness/verifiers/types";
+import { poToleranceAllowanceCents } from "@/lib/agents/matching";
 
 interface ApMatchPayload {
   invoiceId?: unknown;
@@ -46,6 +47,11 @@ export const verifyApMatch: Verifier = (action, context): VerificationVerdict =>
   if (poAmount <= 0) {
     return fail(`Purchase order ${poId} has a non-positive amount (${poAmount}c)`);
   }
+  if (invoiceAmount <= 0) return fail(`Invoice ${invoiceId} has a non-positive amount (${invoiceAmount}c); review credits separately`);
+
+  const fraction = context.policy.apVarianceFraction;
+  const allowance = poToleranceAllowanceCents(poAmount, fraction);
+  if (allowance === null) return fail("AP variance fraction must be finite and between 0 and 1");
 
   const overage = invoiceAmount - poAmount;
   if (overage <= 0) {
@@ -53,10 +59,7 @@ export const verifyApMatch: Verifier = (action, context): VerificationVerdict =>
     return pass("low");
   }
 
-  const fraction = context.policy.apVarianceFraction;
-  // Compare in integer cents: overage/poAmount > fraction  ⟺  overage > poAmount*fraction.
-  // Rounding the allowance rather than dividing keeps this exact at the boundary.
-  const allowance = Math.round(poAmount * fraction);
+  // A fractional-cent allowance never authorizes an extra whole cent.
   if (overage > allowance) {
     const pct = ((overage / poAmount) * 100).toFixed(2);
     return fail(

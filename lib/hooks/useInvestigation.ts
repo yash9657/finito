@@ -44,6 +44,8 @@ export interface InvestigationView {
   };
   events: HarnessEvent[];
   actions: ActionRequest[];
+  viewer?: { canReview: boolean };
+  conversation?: Pick<Investigation, "workflow_id" | "question" | "answer" | "status" | "created_at" | "parent_workflow_id">[];
 }
 
 export interface UseInvestigation {
@@ -63,11 +65,16 @@ export function useInvestigation(id: string): UseInvestigation {
 
   const mountedRef = useRef(true);
   const fetchTokenRef = useRef(0);
+  const controllerRef = useRef<AbortController | null>(null);
 
   const fetchAll = useCallback(async () => {
     const token = ++fetchTokenRef.current;
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 20_000);
     try {
-      const res = await fetch(`/api/investigations/${id}`, { cache: "no-store" });
+      const res = await fetch(`/api/investigations/${id}`, { cache: "no-store", signal: controller.signal });
       if (!res.ok) {
         let message = `Request failed (${res.status})`;
         try {
@@ -87,6 +94,7 @@ export function useInvestigation(id: string): UseInvestigation {
       if (!mountedRef.current || token !== fetchTokenRef.current) return;
       setError(err instanceof Error ? err : new Error(String(err)));
     } finally {
+      clearTimeout(timeout);
       if (mountedRef.current && token === fetchTokenRef.current) setIsLoading(false);
     }
   }, [id]);
@@ -96,6 +104,7 @@ export function useInvestigation(id: string): UseInvestigation {
     void fetchAll();
     return () => {
       mountedRef.current = false;
+      controllerRef.current?.abort();
     };
   }, [fetchAll]);
 

@@ -189,6 +189,9 @@ export function estimateTokens(messages: CanonicalMessage[], systemPrompt = ""):
   let overhead = 0;
   for (const m of messages) {
     chars += m.content.length;
+    // Opaque reasoning is replayed as input too. Ignoring it lets thinking models exhaust
+    // their context before the ordinary conversation appears large enough to compact.
+    if (m.sidecar) chars += JSON.stringify(m.sidecar.data)?.length ?? 0;
     for (const call of m.toolCalls ?? []) {
       chars += call.name.length + JSON.stringify(call.arguments).length;
       overhead += PER_MESSAGE_OVERHEAD_TOKENS;

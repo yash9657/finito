@@ -1,13 +1,7 @@
 "use client";
 
-/**
- * ApprovalsManager (Plan 3 §6) — client shell for Settings → Approvals. Composes the
- * ceiling editor (`ApprovalPolicyEditor`) and the standing-grant list
- * (`StandingRulesList`), both fed from /api/approvals/*.
- */
-
 import * as React from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import ApprovalPolicyEditor from "@/components/settings/ApprovalPolicyEditor";
 import StandingRulesList from "@/components/settings/StandingRulesList";
 import type { ApprovalPolicy, ApprovalRule } from "@/lib/types";
@@ -22,49 +16,93 @@ export default function ApprovalsManager({ isAdmin }: { isAdmin: boolean }) {
   const [policy, setPolicy] = React.useState<ApprovalPolicy | null>(null);
   const [rules, setRules] = React.useState<RuleRow[]>([]);
   const [actionTypes, setActionTypes] = React.useState<ActionTypeSpec[]>([]);
-
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
   const reload = React.useCallback(async () => {
-    const [policyRes, rulesRes] = await Promise.all([
-      fetch("/api/approvals/policy"),
-      fetch("/api/approvals/rules"),
-    ]);
-    if (policyRes.ok) {
-      const body = (await policyRes.json()) as { policy: ApprovalPolicy };
-      setPolicy(body.policy);
-    }
-    if (rulesRes.ok) {
-      const body = (await rulesRes.json()) as { rules: RuleRow[]; actionTypes: ActionTypeSpec[] };
-      setRules(body.rules);
-      setActionTypes(body.actionTypes);
+    setLoading(true);
+    setError(null);
+    try {
+      const [policyRes, rulesRes] = await Promise.all([
+        fetch("/api/approvals/policy"),
+        fetch("/api/approvals/rules"),
+      ]);
+      if (!policyRes.ok || !rulesRes.ok)
+        throw new Error(
+          "Unable to load approval controls. Check your connection and try again.",
+        );
+      const [policyBody, rulesBody] = await Promise.all([
+        policyRes.json(),
+        rulesRes.json(),
+      ]);
+      setPolicy(policyBody.policy);
+      setRules(rulesBody.rules);
+      setActionTypes(rulesBody.actionTypes);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to load approval controls. Try again.",
+      );
+    } finally {
+      setLoading(false);
     }
   }, []);
-
   React.useEffect(() => {
     void reload();
   }, [reload]);
 
   return (
-    <div className="flex flex-col gap-8">
-      <section>
-        <h2 className="mb-3 text-sm font-medium text-muted">Structural ceilings</h2>
-        {policy === null ? (
-          <Card>
-            <CardContent className="p-6 text-sm text-muted">Loading…</CardContent>
-          </Card>
-        ) : (
-          <ApprovalPolicyEditor policy={policy} isAdmin={isAdmin} onSaved={reload} />
-        )}
-      </section>
-
-      <section>
-        <h2 className="mb-3 text-sm font-medium text-muted">Standing rules</h2>
-        <StandingRulesList
-          rules={rules}
-          actionTypes={actionTypes}
-          isAdmin={isAdmin}
-          onChanged={reload}
-        />
-      </section>
+    <div className="flex min-w-0 flex-col gap-10">
+      {error && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center gap-3 text-sm text-error"
+        >
+          {error}
+          <Button
+            variant="outline"
+            disabled={loading}
+            onClick={() => void reload()}
+          >
+            Try again
+          </Button>
+        </div>
+      )}
+      {loading && (
+        <p role="status" className="text-sm text-muted">
+          Loading approval controls…
+        </p>
+      )}
+      {policy && (
+        <section>
+          <h2 className="mb-2 text-lg font-medium">Organization limits</h2>
+          <p className="mb-5 max-w-3xl text-sm leading-6 text-muted">
+            These limits apply before any approval. A reviewer cannot override a
+            blocked action.
+          </p>
+          <ApprovalPolicyEditor
+            policy={policy}
+            isAdmin={isAdmin}
+            onSaved={reload}
+          />
+        </section>
+      )}
+      {policy && (
+        <section>
+          <h2 className="mb-2 text-lg font-medium">Standing rules</h2>
+          <p className="mb-5 max-w-3xl text-sm leading-6 text-muted">
+            Authorize a defined set of routine actions in advance. Each rule
+            remains subject to organization limits and the workflow’s financial
+            checks.
+          </p>
+          <StandingRulesList
+            rules={rules}
+            actionTypes={actionTypes}
+            isAdmin={isAdmin}
+            onChanged={reload}
+          />
+        </section>
+      )}
     </div>
   );
 }

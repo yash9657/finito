@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 interface DialogContextValue {
   open: boolean;
   setOpen: (open: boolean) => void;
+  titleId: string;
+  descriptionId: string;
 }
 
 const DialogContext = React.createContext<DialogContextValue | null>(null);
@@ -29,6 +31,8 @@ export function Dialog({
   onOpenChange?: (open: boolean) => void;
   children: React.ReactNode;
 }) {
+  const titleId = React.useId();
+  const descriptionId = React.useId();
   const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = React.useCallback(
@@ -39,7 +43,7 @@ export function Dialog({
     [onOpenChange],
   );
   return (
-    <DialogContext.Provider value={{ open, setOpen }}>
+    <DialogContext.Provider value={{ open, setOpen, titleId, descriptionId }}>
       {children}
     </DialogContext.Provider>
   );
@@ -76,47 +80,59 @@ export function DialogContent({
   className?: string;
   children: React.ReactNode;
 }) {
-  const { open, setOpen } = useDialogContext();
+  const { open, setOpen, titleId, descriptionId } = useDialogContext();
   const [mounted, setMounted] = React.useState(false);
-
+  const ref = React.useRef<HTMLDialogElement>(null);
   React.useEffect(() => setMounted(true), []);
-
   React.useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+    const dialog = ref.current;
+    if (!mounted || !open || !dialog) return;
+    const previous = document.activeElement as HTMLElement | null;
+    dialog.showModal();
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      dialog.close();
+      document.body.style.overflow = overflow;
+      previous?.focus();
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, setOpen]);
-
+  }, [open, mounted]);
   if (!mounted || !open) return null;
-
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div
-        className="fixed inset-0 bg-black/70"
+    <dialog
+      ref={ref}
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      onCancel={(e) => {
+        e.preventDefault();
+        setOpen(false);
+      }}
+      onClick={(e) => {
+        const rect = e.currentTarget.getBoundingClientRect();
+        if (
+          e.target === e.currentTarget &&
+          (e.clientX < rect.left ||
+            e.clientX > rect.right ||
+            e.clientY < rect.top ||
+            e.clientY > rect.bottom)
+        )
+          setOpen(false);
+      }}
+      className={cn(
+        "fixed inset-0 m-auto max-h-[calc(100dvh_-_48px)] w-[calc(100%_-_32px)] max-w-lg overflow-y-auto rounded-lg bg-card p-6 text-foreground shadow-[var(--shadow-dialog)] backdrop:bg-black/70",
+        className,
+      )}
+    >
+      <button
+        type="button"
         onClick={() => setOpen(false)}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        className={cn(
-          "relative z-50 w-full max-w-lg rounded-lg border border-border bg-card p-6 text-foreground shadow-lg",
-          className,
-        )}
+        aria-label="Close dialog"
+        className="absolute right-3 top-3 flex h-10 w-10 items-center justify-center rounded-md text-muted hover:bg-card-hover hover:text-foreground"
       >
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          aria-label="Close"
-          className="absolute right-4 top-4 text-muted transition-colors hover:text-foreground"
-        >
-          <X className="h-4 w-4" />
-        </button>
-        {children}
-      </div>
-    </div>,
+        <X className="h-4 w-4" />
+      </button>
+      {children}
+    </dialog>,
     document.body,
   );
 }
@@ -135,10 +151,7 @@ export function DialogFooter({
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div
-      className={cn("mt-4 flex justify-end gap-2", className)}
-      {...props}
-    />
+    <div className={cn("mt-4 flex justify-end gap-2", className)} {...props} />
   );
 }
 
@@ -146,8 +159,10 @@ export function DialogTitle({
   className,
   ...props
 }: React.HTMLAttributes<HTMLHeadingElement>) {
+  const { titleId } = useDialogContext();
   return (
     <h2
+      id={titleId}
       className={cn("text-lg font-semibold leading-none", className)}
       {...props}
     />
@@ -158,5 +173,12 @@ export function DialogDescription({
   className,
   ...props
 }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("text-sm text-muted", className)} {...props} />;
+  const { descriptionId } = useDialogContext();
+  return (
+    <p
+      id={descriptionId}
+      className={cn("text-sm text-muted", className)}
+      {...props}
+    />
+  );
 }

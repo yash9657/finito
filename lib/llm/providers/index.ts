@@ -10,8 +10,10 @@ import { openaiProvider } from "@/lib/llm/providers/openai";
 import { googleProvider } from "@/lib/llm/providers/google";
 import { ollamaProvider } from "@/lib/llm/providers/ollama";
 import { customProvider } from "@/lib/llm/providers/custom-endpoint";
+import { fireworksProvider } from "@/lib/llm/providers/fireworks";
 
 export const providers: Record<ProviderId, LLMProvider> = {
+  fireworks: fireworksProvider,
   anthropic: anthropicProvider,
   openai: openaiProvider,
   google: googleProvider,

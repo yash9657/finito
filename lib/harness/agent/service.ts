@@ -14,6 +14,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { writeAudit } from "@/lib/audit";
 import { appendEvent } from "@/lib/harness/events";
 import { clampBudget, runInvestigation, type InvestigationOutcome } from "@/lib/harness/agent/loop";
+import type { PriorConversation } from "./memory-context";
 import type { OrgDatasets } from "@/lib/harness/agent/datasets";
 import { INVESTIGATION_TYPE, type Investigation, type InvestigationBudget } from "@/lib/types";
 
@@ -29,6 +30,9 @@ export interface CreateInvestigationArgs {
   createdBy: string | null;
   question: string;
   budget?: Partial<InvestigationBudget>;
+  conversationId?: string;
+  parentWorkflowId?: string;
+  sourceIds?: string[];
 }
 
 /**
@@ -67,6 +71,9 @@ export async function createInvestigation(
     status: "running",
     budget,
     created_by: createdBy,
+    conversation_id: args.conversationId ?? workflow.id,
+    parent_workflow_id: args.parentWorkflowId ?? null,
+    source_ids: args.sourceIds ?? null,
   });
   if (invError) {
     // Roll the workflow row back rather than leaving an investigation-typed workflow with no
@@ -89,9 +96,8 @@ export async function createInvestigation(
 /**
  * Run an investigation to completion and project the outcome.
  *
- * Never throws: the loop's own failure paths already produce a terminal outcome with a reason,
- * and anything that escapes them is caught here and recorded the same way. A route that got an
- * exception instead of a status would have to invent one.
+ * Model failures become terminal outcomes. Persistence failures throw after a best-effort error
+ * marker, because returning a successful outcome that was not durably saved misleads callers.
  */
 export async function executeInvestigation(args: {
   db: SupabaseClient;
@@ -100,6 +106,9 @@ export async function executeInvestigation(args: {
   question: string;
   budget?: Partial<InvestigationBudget>;
   datasets?: OrgDatasets;
+  sourceIds?: string[];
+  history?: PriorConversation[];
+  userId?: string;
 }): Promise<InvestigationOutcome> {
   const { db, workflowId, orgId, question } = args;
 
@@ -112,6 +121,9 @@ export async function executeInvestigation(args: {
       question,
       budget: args.budget,
       datasets: args.datasets,
+      sourceIds: args.sourceIds,
+      history: args.history,
+      userId: args.userId,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -134,8 +146,15 @@ export async function executeInvestigation(args: {
   }
 
   const completedAt = new Date().toISOString();
+  const markPersistenceFailure = async () => {
+    await db.from("workflows").update({
+      status: "error",
+      error_message: "Investigation finished but its result could not be fully saved. Check the audit trail before retrying.",
+      completed_at: completedAt,
+    }).eq("id", workflowId).eq("org_id", orgId).then(() => undefined, () => undefined);
+  };
 
-  await db
+  const { data: savedInvestigation, error: investigationError } = await db
     .from("investigations")
     .update({
       status: outcome.status,
@@ -145,16 +164,25 @@ export async function executeInvestigation(args: {
       tokens_in: outcome.tokensIn,
       tokens_out: outcome.tokensOut,
       completed_at: completedAt,
+      ...(outcome.sourceIds ? { source_ids: outcome.sourceIds } : {}),
     })
-    .eq("workflow_id", workflowId);
+    .eq("workflow_id", workflowId)
+    .eq("org_id", orgId)
+    .select("workflow_id")
+    .maybeSingle();
+
+  if (investigationError || !savedInvestigation) {
+    await markPersistenceFailure();
+    throw new Error("Could not persist investigation result");
+  }
 
   // The workflow row's own status, so the dashboard's existing list renders it sensibly.
-  // `awaiting_review` when a recommendation is waiting on a human — which is exactly what the
+  // `awaiting_approval` when a recommendation is waiting on a human — which is exactly what the
   // existing approval panel is for, and why there is no parallel approval UI (D-G21).
   const pendingRecommendations = outcome.recommendations.filter(
     (r) => r.status === "pending",
   ).length;
-  await db
+  const { data: savedWorkflow, error: workflowError } = await db
     .from("workflows")
     .update({
       status:
@@ -162,13 +190,24 @@ export async function executeInvestigation(args: {
           ? "error"
           : pendingRecommendations > 0
             ? "awaiting_approval"
-            : "approved",
-      error_message: outcome.status === "failed" ? (outcome.error ?? null) : null,
+            : outcome.status === "terminated"
+              ? outcome.answer ? "awaiting_review" : "error"
+              : "approved",
+      error_message: outcome.status !== "answered" ? (outcome.error ?? `Investigation stopped: ${outcome.reason}`) : null,
       completed_at: completedAt,
     })
-    .eq("id", workflowId);
+    .eq("id", workflowId)
+    .eq("org_id", orgId)
+    .select("id")
+    .maybeSingle();
 
-  await writeAudit(db, {
+  if (workflowError || !savedWorkflow) {
+    await markPersistenceFailure();
+    throw new Error("Could not persist investigation workflow status");
+  }
+
+  try {
+    await writeAudit(db, {
     workflowId,
     actorType: "agent",
     actorId: "investigator",
@@ -181,7 +220,11 @@ export async function executeInvestigation(args: {
       tokens_out: outcome.tokensOut,
       recommendations: outcome.recommendations.length,
     },
-  });
+    });
+  } catch {
+    await markPersistenceFailure();
+    throw new Error("Could not persist investigation completion audit");
+  }
 
   return outcome;
 }

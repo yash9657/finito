@@ -16,10 +16,11 @@
  *    behavioural regression rather than an error, which is the worst kind.
  */
 
-import Anthropic, { APIError, RateLimitError } from "@anthropic-ai/sdk";
+import Anthropic, { APIConnectionError, APIError, RateLimitError } from "@anthropic-ai/sdk";
 import {
   defaultTestConnection,
   LLMProviderError,
+  LLM_TIMEOUT_MS,
   TransportError,
   parseRetryAfter,
   withTransportRetry,
@@ -186,13 +187,20 @@ export const anthropicProvider: LLMProvider = {
     const client = new Anthropic({
       apiKey: params.apiKey,
       baseURL: params.baseUrl ?? undefined,
+      // D-P10's per-call timeout applies here too. It was only ever wired into the fetch-based
+      // providers, so a stalled request on this path hung for the SDK's ten-minute default —
+      // and `maxRetries` defaulting to 2 stacked on top of withTransportRetry below, turning one
+      // slow call into up to nine. Retries belong to withTransportRetry, which honours
+      // Retry-After; the SDK should attempt exactly once.
+      timeout: LLM_TIMEOUT_MS,
+      maxRetries: 0,
     });
     const createParams = buildAnthropicParams(params);
 
     const started = Date.now();
     const message = await withTransportRetry(async () => {
       try {
-        return await client.messages.create(createParams);
+        return await client.messages.create(createParams, { signal: params.signal });
       } catch (err) {
         if (err instanceof RateLimitError) {
           const retryAfter = parseRetryAfter(err.headers?.get("retry-after") ?? null);
@@ -200,6 +208,13 @@ export const anthropicProvider: LLMProvider = {
         }
         if (err instanceof APIError && typeof err.status === "number" && err.status >= 500) {
           throw new TransportError(err.status, null, `HTTP ${err.status}`);
+        }
+        // A timed-out or dropped connection is a transport failure, so it belongs to
+        // withTransportRetry like the others. Without this it fell through to the generic
+        // branch and failed outright on the first try — which is how a single slow call at the
+        // end of a long investigation threw away four turns of completed work.
+        if (err instanceof APIConnectionError) {
+          throw new TransportError(503, null, "connection failed or timed out");
         }
         if (err instanceof APIError && (err.status === 401 || err.status === 403)) {
           throw new LLMProviderError("anthropic", err.status, "Invalid API key");
@@ -211,7 +226,7 @@ export const anthropicProvider: LLMProvider = {
         const status = err instanceof APIError ? err.status : undefined;
         throw new LLMProviderError("anthropic", status, "Anthropic request failed");
       }
-    });
+    }, params.signal);
     const latencyMs = Date.now() - started;
 
     const toolCalls = toolCallsFrom(message);

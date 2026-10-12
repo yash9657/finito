@@ -1,8 +1,16 @@
 import Link from "next/link";
-import { Scale, FileCheck2, LineChart, ArrowRight } from "lucide-react";
+import {
+  ArrowUpRight,
+  ArrowRight,
+  Search,
+  Plus,
+  Scale,
+  FileCheck2,
+  ChartNoAxesCombined,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -12,84 +20,42 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatDate, formatTime } from "@/lib/format";
-import type {
-  ActorType,
-  FileType,
-  WorkflowStatus,
+import type { WorkflowStatus, WorkflowType } from "@/lib/types";
+const TYPES: Record<
   WorkflowType,
-} from "@/lib/types";
-
-/* ---- static type / file metadata (mirrors §7/§8/§9 + create route labels) ---- */
-
-const TYPE_LABELS: Record<WorkflowType, string> = {
-  reconciliation: "Reconciliation",
-  ap_matching: "AP Matching",
-  fpa_commentary: "FP&A Commentary",
+  { name: string; description: string; icon: typeof Scale }
+> = {
+  reconciliation: {
+    name: "Reconciliation",
+    description: "ERP export & bank statement",
+    icon: Scale,
+  },
+  ap_matching: {
+    name: "Invoice matching",
+    description: "Invoices & purchase orders",
+    icon: FileCheck2,
+  },
+  fpa_commentary: {
+    name: "Variance analysis",
+    description: "Budget & actuals",
+    icon: ChartNoAxesCombined,
+  },
 };
-
-const TYPE_DESCRIPTIONS: Record<WorkflowType, string> = {
-  reconciliation: "Match ERP transactions against the bank statement and flag exceptions.",
-  ap_matching: "Match invoices to purchase orders and build an approval queue.",
-  fpa_commentary: "Compute budget-vs-actual variances with CFO-level commentary.",
-};
-
-const TYPE_ICONS: Record<WorkflowType, typeof Scale> = {
-  reconciliation: Scale,
-  ap_matching: FileCheck2,
-  fpa_commentary: LineChart,
-};
-
-const REQUIRED_FILES: Record<WorkflowType, FileType[]> = {
-  reconciliation: ["erp_export", "bank_statement"],
-  ap_matching: ["po", "invoice"],
-  fpa_commentary: ["budget", "actuals"],
-};
-
-const FILE_LABELS: Record<FileType, string> = {
-  erp_export: "ERP Export",
-  bank_statement: "Bank Statement",
-  po: "Purchase Orders",
-  invoice: "Invoices",
-  budget: "Budget",
-  actuals: "Actuals",
-};
-
-const QUICK_LAUNCH: WorkflowType[] = [
-  "reconciliation",
-  "ap_matching",
-  "fpa_commentary",
-];
-
-/* ---- status badge (§11.3 colors) ---- */
-
-function StatusBadge({ status }: { status: WorkflowStatus }) {
-  if (status === "running") {
-    return (
-      <Badge variant="running">
-        <span className="relative flex h-1.5 w-1.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-running opacity-75" />
-          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-running" />
-        </span>
-        running
-      </Badge>
-    );
+const STATUSES: Record<
+  WorkflowStatus,
+  {
+    label: string;
+    variant: "muted" | "running" | "warning" | "accent" | "error";
   }
-  const variant: Record<
-    Exclude<WorkflowStatus, "running">,
-    "muted" | "warning" | "accent" | "error"
-  > = {
-    idle: "muted",
-    awaiting_approval: "warning", // Plan 3, D-A10 — suspended on authorization
-    awaiting_review: "warning",
-    approved: "accent",
-    rejected: "error",
-    error: "error",
-  };
-  return <Badge variant={variant[status]}>{status}</Badge>;
-}
-
-/* ---- activity feed row shapes (RLS-scoped join) ---- */
-
+> = {
+  idle: { label: "Ready to run", variant: "muted" },
+  running: { label: "In progress", variant: "running" },
+  awaiting_approval: { label: "Needs authorization", variant: "warning" },
+  awaiting_review: { label: "Ready for review", variant: "warning" },
+  approved: { label: "Approved", variant: "accent" },
+  rejected: { label: "Rejected", variant: "error" },
+  error: { label: "Needs attention", variant: "error" },
+};
 interface WorkflowListRow {
   id: string;
   name: string;
@@ -97,127 +63,204 @@ interface WorkflowListRow {
   status: WorkflowStatus;
   created_at: string;
 }
-
 interface FeedRow {
   id: number;
-  actor_type: ActorType;
+  actor_type: string;
   action: string;
   created_at: string;
   workflow: { name: string } | null;
-  step: { name: string } | null;
 }
-
-const ACTOR_COLOR: Record<ActorType, string> = {
-  agent: "text-accent",
-  human: "text-running",
-  system: "text-muted",
-};
-
-export default async function DashboardPage() {
-  const supabase = await createClient();
-
-  // RLS scopes both reads to the caller's org.
-  const [{ data: workflowsData }, { data: feedData }] = await Promise.all([
-    supabase
-      .from("workflows")
-      .select("id, name, type, status, created_at")
-      .order("created_at", { ascending: false }),
-    supabase
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ q?: string; page?: string }>;
+}) {
+  const params = await searchParams;
+  const q = (params.q ?? "").trim().slice(0, 100);
+  const parsedPage = Number(params.page);
+  const page =
+    Number.isSafeInteger(parsedPage) && parsedPage > 0
+      ? Math.min(parsedPage, 10000)
+      : 1;
+  const pageSize = 20;
+  const db = await createClient();
+  let query = db
+    .from("workflows")
+    .select("id,name,type,status,created_at", { count: "exact" })
+    .neq("type", "investigation")
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .range((page - 1) * pageSize, page * pageSize - 1);
+  if (q) query = query.ilike("name", `%${q.replace(/[\\%_]/g, "\\$&")}%`);
+  const [list, activity, review, running, approved] = await Promise.all([
+    query,
+    db
       .from("audit_log")
-      .select(
-        "id, actor_type, action, created_at, workflow:workflows(name), step:workflow_steps(name)",
-      )
+      .select("id,actor_type,action,created_at,workflow:workflows(name)")
       .order("created_at", { ascending: false })
-      .limit(15),
+      .limit(8),
+    db
+      .from("workflows")
+      .select("id", { count: "exact", head: true })
+      .neq("type", "investigation")
+      .in("status", ["awaiting_approval", "awaiting_review"]),
+    db
+      .from("workflows")
+      .select("id", { count: "exact", head: true })
+      .neq("type", "investigation")
+      .eq("status", "running"),
+    db
+      .from("workflows")
+      .select("id", { count: "exact", head: true })
+      .neq("type", "investigation")
+      .eq("status", "approved"),
   ]);
-
-  const workflows = (workflowsData ?? []) as WorkflowListRow[];
-  const feed = (feedData ?? []) as unknown as FeedRow[];
-
+  if (
+    list.error ||
+    activity.error ||
+    review.error ||
+    running.error ||
+    approved.error
+  )
+    throw new Error("Workspace data unavailable");
+  const workflows = (list.data ?? []) as WorkflowListRow[];
+  const feed = (activity.data ?? []) as unknown as FeedRow[];
+  const total = list.count ?? 0;
+  const pageLink = (p: number) =>
+    `/dashboard?${new URLSearchParams({ ...(q ? { q } : {}), page: String(p) })}`;
   return (
-    <div className="mx-auto max-w-6xl px-8 py-8">
-      <header className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="mt-1 text-sm text-muted">
-          Launch a workflow, then watch the agents work.
-        </p>
+    <div className="page-container">
+      <header className="mb-9 flex flex-wrap items-start justify-between gap-5">
+        <div>
+          <h1 className="page-title">Your close, in view.</h1>
+          <p className="mt-2 text-sm text-muted">
+            The work in motion. The decisions that need you.
+          </p>
+        </div>
+        <Link href="/workflows/new" className="cta">
+          <Plus size={16} />
+          New workflow
+        </Link>
       </header>
-
-      {/* Quick-launch cards */}
-      <section className="mb-10 grid grid-cols-1 gap-4 md:grid-cols-3">
-        {QUICK_LAUNCH.map((type) => {
-          const Icon = TYPE_ICONS[type];
-          return (
-            <Link
-              key={type}
-              href={`/workflows/new?type=${type}`}
-              className="group rounded-lg border border-border bg-card text-foreground transition-colors hover:border-accent/60"
-            >
-              <div className="flex h-full flex-col p-5">
-                <div className="mb-3 flex items-center justify-between">
-                  <span className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background">
-                    <Icon className="h-4 w-4 text-accent" />
-                  </span>
-                  <ArrowRight className="h-4 w-4 text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
-                </div>
-                <h3 className="font-semibold tracking-tight">
-                  {TYPE_LABELS[type]}
-                </h3>
-                <p className="mt-1 text-sm text-muted">
-                  {TYPE_DESCRIPTIONS[type]}
-                </p>
-                <div className="mt-4 flex flex-wrap gap-1.5">
-                  {REQUIRED_FILES[type].map((ft) => (
-                    <span
-                      key={ft}
-                      className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[11px] text-muted"
-                    >
-                      {FILE_LABELS[ft]}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </Link>
-          );
-        })}
-      </section>
-
-      {/* Workflows table */}
+      <dl className="mb-10 grid grid-cols-3 border-y border-border py-6">
+        {[
+          [review.count ?? 0, "Awaiting your review"],
+          [running.count ?? 0, "In progress"],
+          [approved.count ?? 0, "Approved workflows"],
+        ].map(([value, label]) => (
+          <div
+            key={label}
+            className="border-r border-border px-4 first:pl-0 last:border-0 sm:px-7"
+          >
+            <dt className="text-xs text-muted">{label}</dt>
+            <dd className="mt-3 text-3xl font-light tabular-nums">{value}</dd>
+          </div>
+        ))}
+      </dl>
       <section className="mb-10">
-        <h2 className="mb-3 text-sm font-medium text-muted">Workflows</h2>
-        <Card>
-          {workflows.length === 0 ? (
-            <CardContent className="p-8 text-center text-sm text-muted">
-              No workflows yet. Launch one from a card above.
-            </CardContent>
+        <h2 className="section-label mb-4">Start from your source files</h2>
+        <div className="grid gap-x-6 md:grid-cols-3">
+          {Object.entries(TYPES).map(
+            ([type, { name, description, icon: Icon }]) => (
+              <Link
+                href={`/workflows/new?type=${type}`}
+                key={type}
+                className="group flex items-center gap-3 border-b border-border py-5 transition-colors hover:text-accent"
+              >
+                <Icon className="text-muted" size={20} strokeWidth={1.5} />
+                <div className="flex-1">
+                  <h3 className="text-sm font-medium tracking-normal">
+                    {name}
+                  </h3>
+                  <p className="mt-1 text-xs text-muted">{description}</p>
+                </div>
+                <ArrowUpRight
+                  size={16}
+                  className="text-muted group-hover:text-accent"
+                />
+              </Link>
+            ),
+          )}
+        </div>
+      </section>
+      <section>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+          <h2 className="text-lg font-medium">
+            Workflows{" "}
+            <span className="ml-1 text-sm font-normal text-muted">{total}</span>
+          </h2>
+          <form
+            action="/dashboard"
+            className="flex items-center gap-2 rounded-md border border-border bg-card px-3"
+          >
+            <Search size={15} className="text-muted" />
+            <input
+              aria-label="Search workflows by name"
+              name="q"
+              defaultValue={q}
+              placeholder="Find a workflow…"
+              className="h-10 w-44 bg-transparent text-sm outline-none"
+            />
+            <button
+              type="submit"
+              aria-label="Search workflows"
+              className="flex h-10 w-8 items-center justify-center text-muted hover:text-foreground"
+            >
+              <ArrowRight size={16} />
+            </button>
+          </form>
+        </div>
+        <Card className="overflow-hidden">
+          {!workflows.length ? (
+            <div className="px-6 py-14 text-center">
+              <h3 className="text-lg">
+                {q
+                  ? "No workflows match your search."
+                  : "Your next close starts here."}
+              </h3>
+              <p className="mx-auto mb-6 mt-2 max-w-md text-sm leading-6 text-muted">
+                {q
+                  ? "Try a different name, or clear the search to see all workflows."
+                  : "Choose a workflow and upload your source files. FinFlow will prepare the analysis for your review."}
+              </p>
+              <Link
+                className="inline-flex min-h-11 items-center gap-2 text-sm text-accent"
+                href={q ? "/dashboard" : "/workflows/new"}
+              >
+                {q ? "Clear search" : "Create your first workflow"}
+                <ArrowRight size={16} />
+              </Link>
+            </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Type</TableHead>
+                  <TableHead>Workflow</TableHead>
+                  <TableHead className="hidden sm:table-cell">Process</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Created</TableHead>
+                  <TableHead className="hidden text-right lg:table-cell">Created</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {workflows.map((w) => (
                   <TableRow key={w.id}>
-                    <TableCell className="font-medium">
+                    <TableCell className="sm:min-w-48">
                       <Link
                         href={`/workflows/${w.id}`}
-                        className="hover:text-accent hover:underline"
+                        className="block py-2 font-medium hover:text-accent"
                       >
                         {w.name}
                       </Link>
                     </TableCell>
-                    <TableCell>
-                      <Badge variant="muted">{TYPE_LABELS[w.type]}</Badge>
+                    <TableCell className="hidden text-muted sm:table-cell">
+                      {TYPES[w.type]?.name ?? w.type}
                     </TableCell>
                     <TableCell>
-                      <StatusBadge status={w.status} />
+                      <Badge variant={STATUSES[w.status].variant}>
+                        {STATUSES[w.status].label}
+                      </Badge>
                     </TableCell>
-                    <TableCell className="font-mono text-xs text-muted">
+                    <TableCell className="hidden whitespace-nowrap text-right font-mono text-xs text-muted lg:table-cell">
                       {formatDate(w.created_at)}
                     </TableCell>
                   </TableRow>
@@ -226,50 +269,68 @@ export default async function DashboardPage() {
             </Table>
           )}
         </Card>
+        {(total > pageSize || page > 1) && (
+          <div className="mt-4 flex items-center justify-between text-sm text-muted">
+            <span>
+              Page {page} · {total} workflows
+            </span>
+            <div className="flex gap-5">
+              {page > 1 && (
+                <Link
+                  href={pageLink(page - 1)}
+                  className="py-2 hover:text-foreground"
+                >
+                  Previous
+                </Link>
+              )}
+              {page * pageSize < total && (
+                <Link
+                  href={pageLink(page + 1)}
+                  className="py-2 hover:text-foreground"
+                >
+                  Next
+                </Link>
+              )}
+            </div>
+          </div>
+        )}
       </section>
-
-      {/* Recent activity feed */}
-      <section>
-        <h2 className="mb-3 text-sm font-medium text-muted">Recent activity</h2>
-        <Card>
-          <CardHeader className="border-b border-border">
-            <CardTitle className="text-sm font-medium text-muted">
-              Last 15 audit events
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {feed.length === 0 ? (
-              <div className="p-8 text-center text-sm text-muted">
-                No activity yet.
+      <section className="mt-10">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-medium">Recent activity</h2>
+          <span className="text-xs text-muted">Latest 8 events</span>
+        </div>
+        {feed.length ? (
+          <div className="divide-y divide-border border-y border-border">
+            {feed.map((r) => (
+              <div
+                key={r.id}
+                className="grid grid-cols-[64px_1fr] items-center gap-x-4 gap-y-2 py-4 text-xs sm:flex sm:flex-wrap"
+              >
+                <span className="min-w-16 font-mono text-muted">
+                  {formatTime(r.created_at)}
+                </span>
+                <span className="min-w-36 capitalize">
+                  {r.action.replaceAll("_", " ")}
+                </span>
+                <span className="col-span-2 min-w-0 flex-1 text-muted">
+                  {r.workflow?.name}
+                </span>
+                <span className="text-muted">
+                  {r.actor_type === "agent"
+                    ? "Agent"
+                    : r.actor_type === "human"
+                      ? "Team member"
+                      : "System"}
+                </span>
               </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <div className="min-w-max divide-y divide-border font-mono text-xs">
-                  {feed.map((r) => (
-                    <div
-                      key={r.id}
-                      className="grid grid-cols-[auto_4.5rem_10rem_1fr_auto] items-baseline gap-4 px-4 py-1.5"
-                    >
-                      <span className="text-muted">
-                        {formatTime(r.created_at)}
-                      </span>
-                      <span className={ACTOR_COLOR[r.actor_type]}>
-                        {r.actor_type}
-                      </span>
-                      <span className="text-foreground">{r.action}</span>
-                      <span className="truncate text-muted">
-                        {r.step?.name ?? ""}
-                      </span>
-                      <span className="truncate text-right text-muted">
-                        {r.workflow?.name ?? ""}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            ))}
+          </div>
+        ) : (
+          <p className="border-t border-border py-6 text-sm text-muted">
+            Workflow activity and review decisions will appear here.
+          </p>
+        )}
       </section>
     </div>
   );

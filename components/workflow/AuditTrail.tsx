@@ -14,68 +14,67 @@ import {
   decisionNarrative,
 } from "@/lib/approvals/report";
 import { formatCents } from "@/lib/format";
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableHead,
-  TableCell,
-} from "@/components/ui/table";
-import { formatDateTime } from "@/lib/format";
+import { Badge } from "@/components/ui/badge";
 
-/**
- * AuditTrail — the on-page audit certificate (PLAN §12).
- *
- * Renders the same data that drives the "Audit Certificate" sheet of the Excel
- * export: workflow ids/times, uploaded files (filename, size, full SHA-256),
- * every step (number, name, track, model-or-deterministic, input hash, times,
- * duration), and the human review decision (reviewer email, decision, timestamp,
- * comment). The footer line is verbatim per the spec.
- */
-
-/** Distinct `provider:model` pairs actually used across the run (D-P14). */
 function modelsUsed(steps: WorkflowStep[]): string[] {
-  const seen = new Set<string>();
-  for (const s of steps) {
-    if (s.provider_used && s.model) seen.add(`${s.provider_used}:${s.model}`);
-  }
-  return [...seen].sort();
+  return [
+    ...new Set(
+      steps
+        .filter((s) => s.provider_used && s.model)
+        .map((s) => `${s.provider_used}: ${s.model}`),
+    ),
+  ].sort();
 }
-
-function stepDuration(startedAt: string | null, completedAt: string | null): string {
+function stepDuration(
+  startedAt: string | null,
+  completedAt: string | null,
+): string {
   if (!startedAt || !completedAt) return "—";
   const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime();
-  if (Number.isNaN(ms) || ms < 0) return "—";
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(1)} s`;
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
-
 function stamp(iso: string | null): string {
-  return iso ? formatDateTime(iso) : "—";
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return `${new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZone: "UTC" }).format(date)} UTC`;
 }
-
-interface FieldProps {
+function humanLabel(value: string): string {
+  return value.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+}
+const WORKFLOW_LABEL = {
+  reconciliation: "Reconciliation",
+  ap_matching: "Invoice matching",
+  fpa_commentary: "Variance analysis",
+  investigation: "Investigation",
+};
+function Field({
+  label,
+  children,
+  mono = false,
+}: {
   label: string;
   children: React.ReactNode;
-}
-
-function Field({ label, children }: FieldProps) {
+  mono?: boolean;
+}) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-xs uppercase tracking-wide text-muted">{label}</dt>
-      <dd className="font-mono text-sm text-foreground break-all">{children}</dd>
+    <div className="min-w-0">
+      <dt className="text-sm text-muted">{label}</dt>
+      <dd
+        className={`mt-1 whitespace-pre-wrap break-words text-sm leading-6 ${mono ? "break-all font-mono" : ""}`}
+      >
+        {children}
+      </dd>
     </div>
   );
 }
-
 export interface AuditTrailProps {
   workflow: Workflow;
   steps: WorkflowStep[];
   files: WorkflowFile[];
   decision: ReviewDecision | null;
   reviewer: Profile | null;
-  /** Consequential actions + the emails of whoever approved them (Plan 3, D-A15). */
   actions?: ActionRequest[];
   approverEmails?: Record<string, string>;
 }
@@ -91,224 +90,186 @@ export default function AuditTrail({
 }: AuditTrailProps) {
   const orderedSteps = [...steps].sort((a, b) => a.step_number - b.step_number);
   const chain = authorizationSummary(actions);
-
   return (
-    <section className="rounded-lg border border-border bg-card">
-      <header className="border-b border-border px-5 py-4">
-        <h2 className="text-lg font-semibold tracking-tight">Audit Certificate</h2>
-        <p className="mt-1 text-sm text-muted">
-          Immutable record of this workflow&apos;s execution, inputs, and human
-          approval.
+    <section className="min-w-0 border-t border-border pt-8">
+      <header className="mb-8">
+        <h2 className="text-xl font-medium tracking-tight">Audit record</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">
+          Source files, processing steps, authorizations, and final review
+          recorded for this workflow. All timestamps below are in UTC.
         </p>
       </header>
-
-      <div className="flex flex-col gap-8 px-5 py-5">
-        {/* Workflow */}
-        <div>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
-            Workflow
-          </h3>
-          <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Workflow ID">{workflow.id}</Field>
-            <Field label="Type">{workflow.type}</Field>
-            <Field label="Launched at">{stamp(workflow.started_at)}</Field>
-            <Field label="Completed at">{stamp(workflow.completed_at)}</Field>
+      <div className="min-w-0 space-y-9">
+        <section>
+          <h3 className="mb-4 font-medium">Workflow</h3>
+          <dl className="grid min-w-0 gap-x-8 gap-y-4 sm:grid-cols-2">
+            <Field label="Workflow ID" mono>
+              {workflow.id}
+            </Field>
+            <Field label="Type">{WORKFLOW_LABEL[workflow.type]}</Field>
+            <Field label="Started">{stamp(workflow.started_at)}</Field>
+            <Field label="Completed">{stamp(workflow.completed_at)}</Field>
           </dl>
-        </div>
-
-        {/* Files */}
-        <div>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
-            Input files
-          </h3>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Filename</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead className="text-right">Size (bytes)</TableHead>
-                <TableHead>SHA-256</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {files.length === 0 ? (
-                <TableRow>
-                  <TableCell className="text-muted" colSpan={4}>
-                    No files recorded.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                files.map((f) => (
-                  <TableRow key={f.id}>
-                    <TableCell className="font-mono">{f.filename}</TableCell>
-                    <TableCell className="font-mono text-muted">
-                      {f.file_type}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {f.size_bytes.toLocaleString("en-US")}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs break-all">
+        </section>
+        <section>
+          <h3 className="mb-4 font-medium">Source files</h3>
+          {files.length === 0 ? (
+            <p className="text-sm text-muted">No source files recorded.</p>
+          ) : (
+            <ul className="divide-y divide-border border-y border-border">
+              {files.map((f) => (
+                <li key={f.id} className="min-w-0 space-y-3 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <p className="min-w-0 break-all text-sm font-medium">
+                      {f.filename}
+                    </p>
+                    <span className="shrink-0 text-sm text-muted">
+                      {f.size_bytes.toLocaleString("en-US")} bytes
+                    </span>
+                  </div>
+                  <dl className="grid min-w-0 gap-3">
+                    <Field label="Source type">{humanLabel(f.file_type)}</Field>
+                    <Field label="File fingerprint (SHA-256)" mono>
                       {f.sha256}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-
-        {/* Steps */}
-        <div>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
-            Execution steps
-          </h3>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-right">#</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Track</TableHead>
-                <TableHead>Model</TableHead>
-                <TableHead className="text-right">Tokens in</TableHead>
-                <TableHead className="text-right">Tokens out</TableHead>
-                <TableHead className="text-right">Latency</TableHead>
-                <TableHead>Input hash (SHA-256)</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead>Completed</TableHead>
-                <TableHead className="text-right">Duration</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {orderedSteps.length === 0 ? (
-                <TableRow>
-                  <TableCell className="text-muted" colSpan={11}>
-                    No steps recorded.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                orderedSteps.map((s) => (
-                  <TableRow key={s.id}>
-                    <TableCell className="text-right font-mono">
-                      {s.step_number}
-                    </TableCell>
-                    <TableCell>{s.name}</TableCell>
-                    <TableCell className="font-mono text-muted">{s.track}</TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {s.provider_used && s.model
-                        ? `${s.provider_used}:${s.model}`
-                        : "deterministic"}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs">
-                      {s.tokens_in !== null ? s.tokens_in.toLocaleString("en-US") : "—"}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs">
-                      {s.tokens_out !== null ? s.tokens_out.toLocaleString("en-US") : "—"}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs">
-                      {s.latency_ms !== null ? `${(s.latency_ms / 1000).toFixed(1)} s` : "—"}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs break-all">
-                      {s.input_hash ?? "—"}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted">
-                      {stamp(s.started_at)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted">
-                      {stamp(s.completed_at)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs">
+                    </Field>
+                  </dl>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section>
+          <h3 className="mb-4 font-medium">Processing steps</h3>
+          {orderedSteps.length === 0 ? (
+            <p className="text-sm text-muted">No processing steps recorded.</p>
+          ) : (
+            <ol className="divide-y divide-border border-y border-border">
+              {orderedSteps.map((s) => (
+                <li key={s.id} className="min-w-0 py-5">
+                  <div className="mb-4 flex flex-wrap items-center gap-3">
+                    <span className="text-sm text-muted">
+                      Step {s.step_number}
+                    </span>
+                    <h4 className="min-w-0 break-words text-sm font-medium">
+                      {s.name}
+                    </h4>
+                    <Badge
+                      variant={s.status === "complete" ? "accent" : "muted"}
+                    >
+                      {humanLabel(s.status)}
+                    </Badge>
+                    <span className="text-sm text-muted sm:ml-auto">
                       {stepDuration(s.started_at, s.completed_at)}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-
-        {/* Authorization chain (Plan 3, Edge #4) */}
+                    </span>
+                  </div>
+                  <dl className="grid min-w-0 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <Field label="Processing group">
+                      {humanLabel(s.track)}
+                    </Field>
+                    <Field label="Method or model" mono>
+                      {s.provider_used && s.model
+                        ? `${s.provider_used}: ${s.model}`
+                        : "Deterministic calculation"}
+                    </Field>
+                    <Field label="Model usage">
+                      {s.tokens_in === null && s.tokens_out === null
+                        ? "No model tokens recorded"
+                        : `${s.tokens_in?.toLocaleString("en-US") ?? "—"} input / ${s.tokens_out?.toLocaleString("en-US") ?? "—"} output tokens`}
+                    </Field>
+                    <Field label="Started">{stamp(s.started_at)}</Field>
+                    <Field label="Completed">{stamp(s.completed_at)}</Field>
+                    <Field label="Model response time">
+                      {s.latency_ms === null
+                        ? "—"
+                        : `${(s.latency_ms / 1000).toFixed(1)} s`}
+                    </Field>
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <Field label="Input fingerprint (SHA-256)" mono>
+                        {s.input_hash ?? "Not recorded"}
+                      </Field>
+                    </div>
+                  </dl>
+                </li>
+              ))}
+            </ol>
+          )}
+        </section>
         {actions.length > 0 && (
-          <div>
-            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
-              Authorization chain
-            </h3>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Risk</TableHead>
-                  <TableHead>Counterparty</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead>Target</TableHead>
-                  <TableHead>Outcome</TableHead>
-                  <TableHead>Basis</TableHead>
-                  <TableHead>Proposed</TableHead>
-                  <TableHead>Decided</TableHead>
-                  <TableHead>Committed</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {actions.map((a) => (
-                  <TableRow key={a.id}>
-                    <TableCell className="text-xs">{actionTypeLabel(a.action_type)}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted">
-                      {RISK_CLASS_SPECS[a.risk_class]?.label ?? a.risk_class}
-                    </TableCell>
-                    <TableCell className="text-xs">{a.counterparty ?? "—"}</TableCell>
-                    <TableCell className="text-right font-mono text-xs">
-                      {a.amount_cents === null ? "—" : formatCents(a.amount_cents)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted">
-                      {a.target_kind} {a.target_id}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">{a.status}</TableCell>
-                    <TableCell className="text-xs">
-                      {decisionNarrative(a, approverEmails)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted">
-                      {stamp(a.proposed_at)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted">
-                      {stamp(a.decided_at)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted">
+          <section>
+            <h3 className="mb-2 font-medium">Authorization history</h3>
+            <p className="mb-4 text-sm leading-6 text-muted">
+              These records show authorization decisions. They do not confirm
+              that a payment was sent.
+            </p>
+            <ol className="divide-y divide-border border-y border-border">
+              {actions.map((a) => (
+                <li key={a.id} className="min-w-0 py-5">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="text-sm font-medium">
+                      {actionTypeLabel(a.action_type)}
+                    </h4>
+                    <span className="font-mono text-sm">
+                      {a.amount_cents === null
+                        ? "Amount not specified"
+                        : formatCents(a.amount_cents)}
+                    </span>
+                  </div>
+                  <dl className="grid min-w-0 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+                    <Field label="Counterparty">{a.counterparty ?? "—"}</Field>
+                    <Field label="Risk classification">
+                      {RISK_CLASS_SPECS[a.risk_class]?.label ??
+                        humanLabel(a.risk_class)}
+                    </Field>
+                    <Field label="Outcome">{humanLabel(a.status)}</Field>
+                    <Field label="Target record" mono>
+                      {humanLabel(a.target_kind)} {a.target_id}
+                    </Field>
+                    <div className="sm:col-span-2">
+                      <Field label="Authorization basis">
+                        {decisionNarrative(a, approverEmails)}
+                      </Field>
+                    </div>
+                    <Field label="Proposed">{stamp(a.proposed_at)}</Field>
+                    <Field label="Decided">{stamp(a.decided_at)}</Field>
+                    <Field label="Recorded as complete">
                       {stamp(a.committed_at)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                    </Field>
+                  </dl>
+                </li>
+              ))}
+            </ol>
+          </section>
         )}
-
-        {/* Review */}
-        <div>
-          <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
-            Human review
-          </h3>
+        <section>
+          <h3 className="mb-4 font-medium">Final review</h3>
           {decision ? (
-            <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="Reviewer">{reviewer?.email ?? decision.reviewer_id}</Field>
-              <Field label="Decision">{decision.decision}</Field>
-              <Field label="Timestamp">{stamp(decision.decided_at)}</Field>
+            <dl className="grid min-w-0 gap-x-8 gap-y-4 sm:grid-cols-2">
+              <Field label="Reviewer">
+                {reviewer?.email ?? decision.reviewer_id}
+              </Field>
+              <Field label="Decision">{humanLabel(decision.decision)}</Field>
+              <Field label="Decided">{stamp(decision.decided_at)}</Field>
               <Field label="Comment">
-                {decision.comment && decision.comment.trim().length > 0
-                  ? decision.comment
-                  : "—"}
+                {decision.comment?.trim() || "No comment recorded."}
               </Field>
             </dl>
           ) : (
-            <p className="text-sm text-muted">No review decision recorded.</p>
+            <p className="text-sm text-muted">No final review recorded.</p>
           )}
-        </div>
-
-        {/* Footer */}
-        <p className="border-t border-border pt-4 font-mono text-xs text-muted">
-          Generated by FinFlow · models used:{" "}
-          {modelsUsed(orderedSteps).join(", ") || "none"} · all step inputs hashed with
-          SHA-256 at execution time
-          {chain.total > 0 && <> · {authorizationFooterClause(chain)}</>}
-        </p>
+        </section>
+        <footer className="min-w-0 border-t border-border pt-5 text-sm leading-6 text-muted">
+          <p>
+            Generated by FinFlow. Source and step fingerprints identify the
+            recorded inputs.
+          </p>
+          <p className="mt-2 break-all">
+            Models used:{" "}
+            {modelsUsed(orderedSteps).join(", ") || "None recorded"}.
+          </p>
+          {chain.total > 0 && (
+            <p className="mt-2">{authorizationFooterClause(chain)}</p>
+          )}
+        </footer>
       </div>
     </section>
   );

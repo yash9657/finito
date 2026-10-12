@@ -13,8 +13,8 @@ import type { OrgModelConfigPublic, WorkflowType } from "@/lib/types";
 
 const WORKFLOW_LABEL: Record<WorkflowType, string> = {
   reconciliation: "Reconciliation",
-  ap_matching: "AP Matching",
-  fpa_commentary: "FP&A Commentary",
+  ap_matching: "Invoice matching",
+  fpa_commentary: "Variance analysis",
 };
 
 interface Assignment {
@@ -31,18 +31,30 @@ interface Props {
   onChanged: () => void;
 }
 
-export default function StepModelMatrix({ llmSteps, configs, assignments, isAdmin, onChanged }: Props) {
+export default function StepModelMatrix({
+  llmSteps,
+  configs,
+  assignments,
+  isAdmin,
+  onChanged,
+}: Props) {
   const [saving, setSaving] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [saved, setSaved] = React.useState<string | null>(null);
   const active = configs.filter((c) => c.is_active);
   const defaultConfig = active.find((c) => c.is_default);
 
   const assignmentFor = (wf: string, key: string): string =>
-    assignments.find((a) => a.workflow_type === wf && a.step_key === key)?.assigned_provider_config_id ?? "";
+    assignments.find((a) => a.workflow_type === wf && a.step_key === key)
+      ?.assigned_provider_config_id ?? "";
 
   async function assign(wf: WorkflowType, stepKey: string, configId: string) {
+    if (saving || !isAdmin) return;
     setSaving(`${wf}:${stepKey}`);
+    setError(null);
+    setSaved(null);
     try {
-      await fetch("/api/llm/step-configs", {
+      const response = await fetch("/api/llm/step-configs", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -51,7 +63,18 @@ export default function StepModelMatrix({ llmSteps, configs, assignments, isAdmi
           provider_config_id: configId === "" ? null : configId,
         }),
       });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? "Could not save the model assignment.");
+      }
+      setSaved("Model assignment saved.");
       onChanged();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not save the model assignment. Try again.",
+      );
     } finally {
       setSaving(null);
     }
@@ -65,30 +88,47 @@ export default function StepModelMatrix({ llmSteps, configs, assignments, isAdmi
   }
 
   const defaultLabel = defaultConfig
-    ? `Org default (${defaultConfig.display_name})`
-    : "Org default (env / none)";
+    ? `Organization default (${defaultConfig.display_name})`
+    : "Workspace default";
 
   return (
     <div className="flex flex-col gap-6">
+      {error && (
+        <p role="alert" className="text-sm text-error">
+          {error} Your previous assignment is unchanged; choose the model again
+          to retry.
+        </p>
+      )}
+      {saved && (
+        <p role="status" className="text-sm text-accent">
+          {saved}
+        </p>
+      )}
       {[...byWorkflow.entries()].map(([wf, steps]) => (
         <div key={wf}>
           <h3 className="mb-2 text-sm font-medium">{WORKFLOW_LABEL[wf]}</h3>
-          <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+          <div className="flex flex-col divide-y divide-border border-y border-border">
             {steps.map((s) => {
               const current = assignmentFor(wf, s.step_key);
               return (
-                <div key={s.step_key} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <div
+                  key={s.step_key}
+                  className="flex flex-col items-stretch justify-between gap-3 py-3 sm:flex-row sm:items-center"
+                >
                   <div className="flex min-w-0 flex-col">
-                    <span className="truncate text-sm">{s.name}</span>
-                    <span className="font-mono text-[11px] text-muted">
-                      {s.step_key} · {s.role}
-                    </span>
+                    <label
+                      htmlFor={`model-${wf}-${s.step_key}`}
+                      className="text-sm"
+                    >
+                      {s.name}
+                    </label>
                   </div>
                   <select
+                    id={`model-${wf}-${s.step_key}`}
                     value={current}
-                    disabled={!isAdmin || saving === `${wf}:${s.step_key}`}
+                    disabled={!isAdmin || saving !== null}
                     onChange={(e) => assign(wf, s.step_key, e.target.value)}
-                    className="w-56 shrink-0 rounded-md border border-border bg-transparent px-2 py-1.5 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60"
+                    className="min-h-11 w-full rounded-md sm:w-64 sm:shrink-0 border border-border bg-background px-3 py-2 text-base sm:text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60"
                   >
                     <option value="">{defaultLabel}</option>
                     {active.map((c) => (

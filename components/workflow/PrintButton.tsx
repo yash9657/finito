@@ -13,7 +13,7 @@ export default function PrintButton() {
   return (
     <Button variant="outline" onClick={() => window.print()}>
       <Printer className="h-4 w-4" />
-      Print / Save as PDF
+      Print or save PDF
     </Button>
   );
 }

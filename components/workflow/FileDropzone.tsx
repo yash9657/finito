@@ -65,6 +65,9 @@ export default function FileDropzone({
   } | null>(null);
 
   async function upload(file: File) {
+    if (uploading) return;
+    if (!/\.(csv|xlsx|xls)$/i.test(file.name)) { setError("Choose a CSV or Excel file (.csv, .xlsx, .xls)."); return; }
+    if (!file.size || file.size > 10 * 1024 * 1024) { setError("Choose a nonempty file smaller than 10 MB."); return; }
     setError(null);
     setUploading(true);
     try {
@@ -120,12 +123,13 @@ export default function FileDropzone({
     <div>
       <div className="mb-1.5 flex items-center justify-between">
         <span className="text-sm font-medium text-foreground">{label}</span>
-        <span className="font-mono text-xs text-muted">{fileType}</span>
+        <span className="text-xs text-muted">CSV or Excel · up to 10 MB</span>
       </div>
 
       <div
         role="button"
-        tabIndex={0}
+        tabIndex={uploading ? -1 : 0}
+        aria-disabled={uploading}
         aria-label={`Upload ${label}`}
         onClick={() => clickable && inputRef.current?.click()}
         onKeyDown={(e) => {

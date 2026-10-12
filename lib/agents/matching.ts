@@ -87,9 +87,38 @@ export function withinTolerance(a: number, b: number, tol: number): boolean {
   return Math.abs(a - b) <= tol * larger;
 }
 
+/** Exact whole-cent allowance, using the PO as the base; never round up a fraction of a cent. */
+export function poToleranceAllowanceCents(poAmountCents: number, fraction: number): number | null {
+  if (!Number.isSafeInteger(poAmountCents) || poAmountCents <= 0 || !Number.isFinite(fraction) || fraction < 0 || fraction > 1) return null;
+  const [coefficient, exponentText = "0"] = fraction.toString().split("e");
+  const [whole, decimals = ""] = coefficient.split(".");
+  const digits = BigInt(whole + decimals);
+  const scale = decimals.length - Number(exponentText);
+  const numerator = scale < 0 ? digits * BigInt(10) ** BigInt(-scale) : digits;
+  const denominator = scale > 0 ? BigInt(10) ** BigInt(scale) : BigInt(1);
+  return Number(BigInt(poAmountCents) * numerator / denominator);
+}
+
+/** Symmetric review band around a positive approved PO; its base never shifts with the invoice. */
+export function withinPoTolerance(invoiceAmountCents: number, poAmountCents: number, fraction: number): boolean {
+  if (!Number.isSafeInteger(invoiceAmountCents) || invoiceAmountCents <= 0) return false;
+  const allowance = poToleranceAllowanceCents(poAmountCents, fraction);
+  return allowance !== null && Math.abs(invoiceAmountCents - poAmountCents) <= allowance;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Reconciliation — deterministic pass (§7 step 3).                            */
 /* -------------------------------------------------------------------------- */
+
+// The current matcher enumerates pairs in memory. Reject unsupported jobs before
+// allocating pair arrays or spending model tokens; indexed matching is a separate capability.
+export const MAX_MATCH_ROW_PAIRS = 2_000_000;
+
+function assertMatchingWorkload(left: number, right: number): void {
+  if (left * right > MAX_MATCH_ROW_PAIRS) {
+    throw new Error(`Matching exceeds the supported ${MAX_MATCH_ROW_PAIRS.toLocaleString("en-US")} row-pair limit. Split both source files into aligned periods, accounts or entities and retry.`);
+  }
+}
 
 /** An ERP↔bank pair the deterministic matcher flags for Claude adjudication. */
 export interface ReconCandidatePair {
@@ -117,9 +146,9 @@ export interface ReconMatchPass {
 }
 
 /**
- * Detect duplicates within the bank set: same amount + date + description (§7 step 3).
- * All-but-the-first occurrence (file order) is marked `duplicateOf` the first and
- * excluded from the matching pool — otherwise a duplicate steals a real match (§15).
+ * Exclude repeat imports only when source transaction identity AND monetary details
+ * agree. Identical same-day amounts/descriptions can be separate real payments; absent
+ * or distinct transaction IDs must not cause cash movements to disappear from totals.
  */
 export function detectBankDuplicates(bank: BankTxn[]): {
   duplicates: DuplicateBankTxn[];
@@ -129,7 +158,12 @@ export function detectBankDuplicates(bank: BankTxn[]): {
   const duplicates: DuplicateBankTxn[] = [];
   const unique: BankTxn[] = [];
   for (const b of bank) {
-    const key = `${b.amountCents}|${b.date}|${b.description.trim().toLowerCase()}`;
+    const transactionId = b.transactionId.trim();
+    if (!transactionId) {
+      unique.push(b);
+      continue;
+    }
+    const key = JSON.stringify([transactionId, b.amountCents, b.date, b.description.trim().toLowerCase()]);
     const first = firstSeen.get(key);
     if (first === undefined) {
       firstSeen.set(key, b.id);
@@ -151,6 +185,7 @@ export function detectBankDuplicates(bank: BankTxn[]): {
  *     (Jaccard ≥ 0.4 AND |amount diff| ≤ 5% of the larger).
  */
 export function reconcile(erp: ErpTxn[], bank: BankTxn[]): ReconMatchPass {
+  assertMatchingWorkload(erp.length, bank.length);
   const { duplicates, unique: bankPool } = detectBankDuplicates(bank);
 
   const erpTokens = new Map(
@@ -322,7 +357,7 @@ export interface ApCandidatePair {
   reason: string;
 }
 
-/** A duplicate invoice (same vendor+amount within 30 days of an earlier one). */
+/** A suspected duplicate requiring review, not proof that an invoice is invalid. */
 export interface DuplicateInvoice {
   id: string;
   duplicateOf: string;
@@ -338,30 +373,41 @@ export interface ApMatchPass {
 }
 
 /**
- * Detect duplicate invoices (§8 step 4): same normalized vendor + amount, invoice
- * dates within 30 days. All-but-the-first (file order) marked `duplicateOf` the
- * earliest occurrence within range. Duplicates are flagged, not excluded from matching.
+ * Same vendor + invoice number is a suspected resubmission even when date or amount
+ * changed. Also retain the conservative same-vendor/amount 30-day heuristic. Both
+ * require review; matching characteristics alone do not prove a duplicate payment.
  */
 export function detectDuplicateInvoices(invoices: Invoice[]): DuplicateInvoice[] {
-  const groups = new Map<string, Invoice[]>();
-  for (const inv of invoices) {
-    const key = `${normalizeVendor(inv.vendorName)}|${inv.amountCents}`;
-    const arr = groups.get(key);
-    if (arr) arr.push(inv);
-    else groups.set(key, [inv]);
-  }
-  const duplicates: DuplicateInvoice[] = [];
-  for (const arr of groups.values()) {
-    for (let i = 1; i < arr.length; i++) {
-      for (let j = 0; j < i; j++) {
-        if (daysBetween(arr[j].invoiceDate, arr[i].invoiceDate) <= 30) {
-          duplicates.push({ id: arr[i].id, duplicateOf: arr[j].id });
-          break;
-        }
+  const priorByVendorAmountDay = new Map<string, Map<number, { id: string; index: number }>>();
+  const firstByNumber = new Map<string, string>();
+  const duplicateOf = new Map<string, string>();
+  for (const [index, inv] of invoices.entries()) {
+    const vendor = normalizeVendor(inv.vendorName);
+    const number = inv.invoiceNumber.normalize("NFKC").toLowerCase().replace(/[\s\-./_]+/g, "");
+    if (vendor && number) {
+      const identity = JSON.stringify([vendor, number]);
+      const original = firstByNumber.get(identity);
+      if (original) duplicateOf.set(inv.id, original);
+      else firstByNumber.set(identity, inv.id);
+    }
+    const key = JSON.stringify([vendor, inv.amountCents]);
+    const day = Date.parse(`${inv.invoiceDate}T00:00:00Z`) / 86_400_000;
+    if (!Number.isFinite(day)) continue;
+    const priorDays = priorByVendorAmountDay.get(key) ?? new Map<number, { id: string; index: number }>();
+    let first: { id: string; index: number } | undefined;
+    // A bounded 61-day lookup preserves the earliest prior source row regardless
+    // of input date ordering, without a quadratic scan through recurring bills.
+    for (let offset = -30; offset <= 30; offset++) {
+      const candidate = priorDays.get(day + offset);
+      if (candidate && (!first || candidate.index < first.index)) {
+        first = candidate;
       }
     }
+    if (first && !duplicateOf.has(inv.id)) duplicateOf.set(inv.id, first.id);
+    if (!priorDays.has(day)) priorDays.set(day, { id: inv.id, index });
+    priorByVendorAmountDay.set(key, priorDays);
   }
-  return duplicates;
+  return invoices.filter((inv) => duplicateOf.has(inv.id)).map((inv) => ({ id: inv.id, duplicateOf: duplicateOf.get(inv.id)! }));
 }
 
 /**
@@ -373,6 +419,7 @@ export function detectDuplicateInvoices(invoices: Invoice[]): DuplicateInvoice[]
  *  - Duplicate invoices detected in parallel (flagged, not excluded).
  */
 export function matchAp(invoices: Invoice[], pos: PurchaseOrder[]): ApMatchPass {
+  assertMatchingWorkload(invoices.length, pos.length);
   const duplicateInvoices = detectDuplicateInvoices(invoices);
 
   const invVendorNorm = new Map(
@@ -397,7 +444,7 @@ export function matchAp(invoices: Invoice[], pos: PurchaseOrder[]): ApMatchPass 
     const vendor = invVendorNorm.get(inv.id)!;
     for (const po of pos) {
       if (vendor !== poVendorNorm.get(po.id)!) continue;
-      if (!withinTolerance(inv.amountCents, po.amountCents, 0.02)) continue;
+      if (!withinPoTolerance(inv.amountCents, po.amountCents, 0.02)) continue;
       const lineJac = jaccard(invLineTok.get(inv.id)!, poLineTok.get(po.id)!);
       if (lineJac < 0.3) continue;
       eligible.push({ inv, po, amountDiff: inv.amountCents - po.amountCents, lineJac });
@@ -434,7 +481,7 @@ export function matchAp(invoices: Invoice[], pos: PurchaseOrder[]): ApMatchPass 
     const invVendorTok = tokenize(invVendorNorm.get(inv.id)!);
     for (const po of unmatchedPos) {
       const vendorJac = jaccard(invVendorTok, tokenize(poVendorNorm.get(po.id)!));
-      const amtOk = withinTolerance(inv.amountCents, po.amountCents, 0.02);
+      const amtOk = withinPoTolerance(inv.amountCents, po.amountCents, 0.02);
       if (vendorJac < 0.6 && !amtOk) continue;
       candidatePairs.push({
         invoiceId: inv.id,

@@ -11,12 +11,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { requireWorkflowAccess, jsonError } from "@/lib/api/guard";
-import { writeAudit } from "@/lib/audit";
 import { reviewDecisionEnum } from "@/lib/types";
 
 const reviewBodySchema = z.object({
   decision: reviewDecisionEnum,
-  comment: z.string().optional(),
+  comment: z.string().max(5000).optional(),
 });
 
 export async function POST(
@@ -28,6 +27,8 @@ export async function POST(
   const g = await requireWorkflowAccess(id);
   if (!g.ok) return g.response;
   const { admin, profile, workflow } = g;
+
+  if (!["admin", "reviewer"].includes(profile.role)) return jsonError("Reviewer or administrator access is required", 403);
 
   if (workflow.status !== "awaiting_review") {
     return jsonError("Workflow is not awaiting review", 409);
@@ -46,44 +47,14 @@ export async function POST(
   }
   const { decision, comment } = parsed.data;
 
-  const { error: insertError } = await admin.from("review_decisions").insert({
-    workflow_id: workflow.id,
-    reviewer_id: profile.id,
-    decision,
-    comment: comment ?? null,
+  const { data: nextStatus, error } = await admin.rpc("submit_workflow_review", {
+    p_workflow_id: workflow.id, p_org_id: profile.org_id, p_reviewer_id: profile.id,
+    p_decision: decision, p_comment: comment ?? null,
   });
-  if (insertError) {
-    return jsonError(`Failed to record decision: ${insertError.message}`, 500);
+  if (error) {
+    const status = error.code === "42501" ? 403 : error.code === "55000" ? 409 : 500;
+    const message = status === 500 ? "Could not save the review. Check database migrations and retry." : error.message;
+    return jsonError(message, status);
   }
-
-  // revision_requested keeps the workflow awaiting_review; the others are terminal.
-  const nextStatus =
-    decision === "approved"
-      ? "approved"
-      : decision === "rejected"
-        ? "rejected"
-        : "awaiting_review";
-
-  if (nextStatus !== workflow.status) {
-    const { error: updateError } = await admin
-      .from("workflows")
-      .update({ status: nextStatus })
-      .eq("id", workflow.id);
-    if (updateError) {
-      return jsonError(
-        `Failed to update workflow status: ${updateError.message}`,
-        500,
-      );
-    }
-  }
-
-  await writeAudit(admin, {
-    workflowId: workflow.id,
-    actorType: "human",
-    actorId: profile.id,
-    action: "review_submitted",
-    detail: { decision, reviewer: profile.id },
-  });
-
   return NextResponse.json({ status: nextStatus }, { status: 200 });
 }

@@ -9,17 +9,14 @@
  *
  * ## Source ids are the load-bearing part
  *
- * Every row carries `sourceId` — `wf:<8 chars>/<dataset>/<rowId>` — and every tool result quotes
+ * Every row carries `sourceId` — `wf:<full workflow UUID>/<dataset>/<rowId>` — and every tool result quotes
  * it. That is what makes D-G1's third clause checkable rather than aspirational: the final answer
  * cites source ids, and post-validation resolves each one back to a real row before the answer is
  * allowed to exist. An id that does not resolve is a fabricated citation, and the answer is
  * rejected and retried.
  *
- * The workflow id is truncated to 8 characters deliberately. Full UUIDs in every row of every
- * tool result would consume a meaningful fraction of the context window for no benefit — the
- * agent never needs to parse one, only to quote it back — and 8 hex characters distinguish the
- * handful of workflows an org has far more than adequately. Resolution scans the loaded set
- * rather than parsing the id, so a collision would be caught rather than silently mismatched.
+ * Full workflow UUIDs prevent citation collisions as organizations accumulate runs.
+ * Historical short IDs remain readable during compaction for older event records.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -86,7 +83,10 @@ export interface OrgDatasets {
   summaries: DatasetSummary[];
   /** Workflows whose files could not be read, so an empty result is never mistaken for no data. */
   unreadable: { workflowId: string; filename: string; reason: string }[];
+  /** Downloaded bytes, including files rejected after parsing, for cumulative activation limits. */
+  loadedBytes?: number;
 }
+export const DATASET_LOAD_LIMITS = { rows: 200_000, bytes: 64 * 1024 * 1024, fileBytes: 10 * 1024 * 1024, historicalWorkflows: 5 } as const;
 
 /* -------------------------------------------------------------------------- */
 /* Loading                                                                     */
@@ -107,21 +107,30 @@ export interface OrgDatasets {
 export async function loadOrgDatasets(
   db: SupabaseClient,
   orgId: string,
-  opts: { maxWorkflows?: number } = {},
+  opts: { maxWorkflows?: number; workflowIds?: string[]; maxRows?: number; maxBytes?: number } = {},
 ): Promise<OrgDatasets> {
-  const maxWorkflows = opts.maxWorkflows ?? 25;
+  const maxWorkflows = Math.max(1, Math.min(25, Math.trunc(opts.maxWorkflows ?? 25)));
+  const maxRows = Math.max(0, Math.min(DATASET_LOAD_LIMITS.rows, Math.trunc(opts.maxRows ?? DATASET_LOAD_LIMITS.rows)));
+  const maxBytes = Math.max(0, Math.min(DATASET_LOAD_LIMITS.bytes, Math.trunc(opts.maxBytes ?? DATASET_LOAD_LIMITS.bytes)));
+  if (![maxWorkflows, maxRows, maxBytes].every(Number.isFinite)) throw new Error("Invalid dataset limits");
+  if (opts.workflowIds && (opts.workflowIds.length > DATASET_LOAD_LIMITS.historicalWorkflows || new Set(opts.workflowIds).size !== opts.workflowIds.length || opts.workflowIds.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))) throw new Error("Select at most five distinct valid workflow IDs");
+  if (opts.workflowIds?.length === 0) return { rows: [], summaries: [], unreadable: [], loadedBytes: 0 };
 
-  const { data: workflows, error: wfError } = await db
+  let query = db
     .from("workflows")
-    .select("id, name, type, created_at")
+    .select("id, org_id, name, type, created_at")
     .eq("org_id", orgId)
-    .neq("type", "investigation")
+    .neq("type", "investigation");
+  if (opts.workflowIds) query = query.in("id", opts.workflowIds);
+  const { data: workflows, error: wfError } = await query
     .order("created_at", { ascending: false })
-    .limit(maxWorkflows);
+    .limit(opts.workflowIds?.length ?? maxWorkflows);
   if (wfError) throw new Error(`Failed to list workflows: ${wfError.message}`);
+  if ((workflows ?? []).some(workflow => workflow.org_id !== orgId)) throw new Error("Workflow organization scope mismatch");
+  if (opts.workflowIds && ((workflows ?? []).length !== opts.workflowIds.length || (workflows ?? []).some(workflow => !opts.workflowIds!.includes(workflow.id)))) throw new Error("A selected historical workflow is unavailable in this organization");
 
   const byId = new Map((workflows ?? []).map((w) => [w.id as string, w as { id: string; name: string }]));
-  if (byId.size === 0) return { rows: [], summaries: [], unreadable: [] };
+  if (byId.size === 0) return { rows: [], summaries: [], unreadable: [], loadedBytes: 0 };
 
   const { data: files, error: fileError } = await db
     .from("workflow_files")
@@ -132,6 +141,7 @@ export async function loadOrgDatasets(
   const rows: LedgerRow[] = [];
   const summaries: DatasetSummary[] = [];
   const unreadable: OrgDatasets["unreadable"] = [];
+  let loadedBytes = 0;
 
   for (const row of (files ?? []) as WorkflowFile[]) {
     const workflow = byId.get(row.workflow_id);
@@ -139,12 +149,22 @@ export async function loadOrgDatasets(
 
     let parsed: ParsedFile;
     try {
+      if (!row.storage_path.startsWith(`${orgId}/${row.workflow_id}/${row.file_type}/`) || row.storage_path.split("/").some(part => {
+        const decoded = decodeURIComponent(part);
+        return decoded === ".." || decoded === "." || decoded.includes("/") || decoded.includes("\\");
+      })) throw new Error("Source storage scope mismatch");
+      if (!Number.isSafeInteger(row.size_bytes) || row.size_bytes < 1 || row.size_bytes > DATASET_LOAD_LIMITS.fileBytes) throw new Error("Source size is invalid or exceeds the supported file limit");
+      if (loadedBytes + row.size_bytes > maxBytes) throw new Error("Investigation source byte limit reached; narrow the selected workflows");
       const { data: blob, error: dlError } = await db.storage
         .from(STORAGE_BUCKET)
         .download(row.storage_path);
       if (dlError || !blob) throw new Error(dlError?.message ?? "no data");
+      if (blob.size !== row.size_bytes) throw new Error("Source size does not match its uploaded record");
       const buffer = Buffer.from(await blob.arrayBuffer());
+      loadedBytes += buffer.length;
       parsed = parseFile(buffer, row.file_type, { filename: row.filename });
+      if (parsed.meta.sha256 !== row.sha256) throw new Error("Source content hash does not match the uploaded record");
+      if (rows.length + parsed.rows.length > maxRows) throw new Error("Investigation dataset limit reached; narrow the data scope");
     } catch (err) {
       unreadable.push({
         workflowId: row.workflow_id,
@@ -155,11 +175,11 @@ export async function loadOrgDatasets(
     }
 
     const normalized = normalizeParsedFile(parsed, row.workflow_id, workflow.name ?? "(unnamed)");
-    rows.push(...normalized);
+    for (const item of normalized) rows.push(item);
     summaries.push(summarize(normalized, parsed, row));
   }
 
-  return { rows, summaries, unreadable };
+  return { rows, summaries, unreadable, loadedBytes };
 }
 
 /** Seed datasets directly — used by tests and by the proof scripts, which parse from disk. */
@@ -169,7 +189,7 @@ export function normalizeParsedFile(
   workflowName: string,
 ): LedgerRow[] {
   const dataset = parsed.meta.fileType;
-  const shortId = workflowId.slice(0, 8);
+  const shortId = workflowId;
 
   return parsed.rows.map((raw) => {
     const base = {

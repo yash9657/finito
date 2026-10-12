@@ -6,7 +6,7 @@
  *   - the status/track/enum vocabularies (D9),
  *   - the DB row interfaces that mirror the §4 tables (snake_case as stored),
  *   - the step-engine contract (StepContext / StepDefinition, §5.2),
- *   - every Claude structured-output Zod schema (§7/§8/§9) — kept PLAIN
+ *   - every model structured-output Zod schema (§7/§8/§9) — kept PLAIN
  *     (objects/arrays/strings/enums only, no min/max/length, no recursion — §5.3/§15),
  *   - the computed output objects (recon summary, AP queue, FP&A output).
  *
@@ -287,6 +287,7 @@ export interface LlmInvokeMeta {
   modelUsed: string;
   tokensIn: number;
   tokensOut: number;
+  cachedTokensIn?: number;
   latencyMs: number;
   raw: unknown;
 }
@@ -501,6 +502,7 @@ export interface AuditLogRow {
 /* -------------------------------------------------------------------------- */
 
 export const PROVIDER_IDS = [
+  "fireworks",
   "anthropic",
   "openai",
   "google",
@@ -806,6 +808,21 @@ export interface AnswerFigure {
   valueCents?: number;
   /** For `count`, the figure is unitless. */
   value?: number;
+  /** Generic source column, recomputed without assuming its currency or unit. */
+  column?: string;
+  decimalValue?: string;
+}
+
+/** A reproducible calculation, explicitly separate from validated financial figures. */
+export interface InvestigationAnalysis {
+  id: string;
+  title: string;
+  code: string;
+  codeHash: string;
+  inputs: { sourceId: string; filename: string; sha256: string; tableId: string; offset: number; rowCount: number; totalRows: number; preambleRows?: number }[];
+  sourceIds: string[];
+  output: unknown;
+  warnings: string[];
 }
 
 export interface AnswerCitation {
@@ -822,6 +839,7 @@ export interface InvestigationAnswer {
   findings: { statement: string; sourceIds: string[] }[];
   figures: AnswerFigure[];
   citations: AnswerCitation[];
+  analyses?: InvestigationAnalysis[];
   /** True when the loop terminated on a bound rather than by answering. */
   partial: boolean;
 }
@@ -829,6 +847,9 @@ export interface InvestigationAnswer {
 /** An `investigations` row (migration 007). A projection of the stream, never an authority. */
 export interface Investigation {
   workflow_id: string;
+  conversation_id?: string;
+  parent_workflow_id?: string | null;
+  source_ids?: string[] | null;
   org_id: string;
   question: string;
   status: "running" | "answered" | "terminated" | "failed";
@@ -897,6 +918,7 @@ export type ActionRequestRow = ActionRequest;
 
 /** The full JSON body of GET /api/workflows/[id]/status. */
 export interface StatusResponse {
+  viewer?: { canReview: boolean };
   workflow: WorkflowRow;
   steps: StepRow[];
   review: ReviewRow | null;
@@ -908,7 +930,7 @@ export interface StatusResponse {
 export type WorkflowFileRow = WorkflowFile;
 
 /* -------------------------------------------------------------------------- */
-/* Claude structured-output schemas — §7 Reconciliation.                       */
+/* model structured-output schemas — §7 Reconciliation.                       */
 /* Every schema carries a top-level `reasoning: z.string()` (§5.3).           */
 /* -------------------------------------------------------------------------- */
 
@@ -974,7 +996,7 @@ export const reportNarrativeSchema = z.object({
 export type ReportNarrative = z.infer<typeof reportNarrativeSchema>;
 
 /* -------------------------------------------------------------------------- */
-/* Claude structured-output schemas — §8 AP Matching.                          */
+/* model structured-output schemas — §8 AP Matching.                          */
 /* -------------------------------------------------------------------------- */
 
 /** §8 step 3 — invoice↔PO adjudication (same shape as §7, invoice/po ids). */
@@ -1003,6 +1025,9 @@ export const AP_FLAG_CATEGORIES = [
   "amount_variance",
   "duplicate_invoice",
   "past_due",
+  "unapproved_po",
+  "non_positive_amount",
+  "low_confidence_match",
 ] as const;
 export type ApFlagCategory = (typeof AP_FLAG_CATEGORIES)[number];
 export const apFlagCategoryEnum = z.enum(AP_FLAG_CATEGORIES);
@@ -1029,7 +1054,7 @@ export const apQueueNarrativeSchema = z.object({
 export type ApQueueNarrative = z.infer<typeof apQueueNarrativeSchema>;
 
 /* -------------------------------------------------------------------------- */
-/* Claude structured-output schemas — §9 FP&A Commentary.                      */
+/* model structured-output schemas — §9 FP&A Commentary.                      */
 /* -------------------------------------------------------------------------- */
 
 export const FPA_OVERALL_STATUSES = ["favorable", "unfavorable", "mixed"] as const;
@@ -1043,6 +1068,7 @@ export const fpaCommentarySchema = z.object({
     z.object({
       department: z.string(),
       category: z.string(),
+      period: z.string(),
       commentary: z.string(),
     }),
   ),
@@ -1182,6 +1208,7 @@ export interface ApApprovalQueue {
 export interface FpaVarianceComment {
   department: string;
   category: string;
+  period?: string;
   commentary: string;
 }
 

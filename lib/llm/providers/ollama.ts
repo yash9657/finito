@@ -170,7 +170,9 @@ export const ollamaProvider: LLMProvider = {
           method: "POST",
           headers,
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+          signal: params.signal
+            ? AbortSignal.any([params.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)])
+            : AbortSignal.timeout(LLM_TIMEOUT_MS),
         });
       } catch {
         throw new LLMProviderError("ollama", undefined, "Endpoint unreachable");
@@ -187,7 +189,7 @@ export const ollamaProvider: LLMProvider = {
         throw new LLMProviderError("ollama", res.status, label);
       }
       return (await res.json()) as OllamaChatResponse;
-    });
+    }, params.signal);
     const latencyMs = Date.now() - started;
 
     const content = json.message?.content;

@@ -35,25 +35,25 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateTime } from "@/lib/format";
-import type {
-  WorkflowRow,
-  ReviewRow,
-  ReviewDecisionValue,
-} from "@/lib/types";
+import type { WorkflowRow, ReviewRow, ReviewDecisionValue } from "@/lib/types";
 
 interface ReviewBannerProps {
   workflow: WorkflowRow;
   review: ReviewRow | null;
   onDecided: () => void;
+  canReview?: boolean;
 }
 
 export default function ReviewBanner({
   workflow,
   review,
   onDecided,
+  canReview = false,
 }: ReviewBannerProps) {
   const [comment, setComment] = React.useState("");
-  const [pending, setPending] = React.useState<ReviewDecisionValue | null>(null);
+  const [pending, setPending] = React.useState<ReviewDecisionValue | null>(
+    null,
+  );
   const [rerunning, setRerunning] = React.useState(false);
   const [needsProvider, setNeedsProvider] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -61,6 +61,7 @@ export default function ReviewBanner({
   const busy = pending !== null;
 
   async function decide(decision: ReviewDecisionValue) {
+    if (busy || !canReview) return;
     setError(null);
     setPending(decision);
     try {
@@ -73,9 +74,9 @@ export default function ReviewBanner({
         }),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as
-          | { error?: string }
-          | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         throw new Error(body?.error ?? `Review failed (${res.status})`);
       }
       setComment("");
@@ -88,15 +89,18 @@ export default function ReviewBanner({
   }
 
   async function rerun() {
+    if (rerunning) return;
     setNeedsProvider(false);
     setError(null);
     setRerunning(true);
     try {
-      const res = await fetch(`/api/workflows/${workflow.id}/run`, { method: "POST" });
+      const res = await fetch(`/api/workflows/${workflow.id}/run`, {
+        method: "POST",
+      });
       if (!res.ok && res.status !== 202) {
-        const body = (await res.json().catch(() => null)) as
-          | { error?: string }
-          | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         const message = body?.error ?? `Re-run failed (${res.status})`;
         if (res.status === 400 && /provider configured/i.test(message)) {
           setNeedsProvider(true);
@@ -117,26 +121,34 @@ export default function ReviewBanner({
     return (
       <div className="m-3 flex flex-wrap items-center gap-2 rounded-lg border border-warning/30 bg-warning/[0.06] p-4 text-sm text-warning">
         <ShieldAlert className="h-4 w-4 shrink-0" />
-        <span className="font-medium">Suspended pending authorization</span>
+        <span className="font-medium">Approval required</span>
         <span className="text-warning/80">
-          Nothing has been committed — decide the actions above and the run continues from
-          where it stopped.
+          Review the proposed actions above. The workflow will continue after
+          the required decisions.
         </span>
       </div>
     );
   }
 
   /* ---- awaiting review: the decision gate ---- */
+  if (workflow.status === "awaiting_review" && !canReview) {
+    return (
+      <p className="m-4 rounded-lg border border-warning/30 bg-warning/5 p-4 text-sm text-warning">
+        Ready for review. A workspace reviewer or administrator must record the
+        decision.
+      </p>
+    );
+  }
   if (workflow.status === "awaiting_review") {
     return (
       <div className="m-3 rounded-lg border border-warning/30 bg-warning/[0.06] p-4">
         <div className="mb-3 flex items-center gap-2 text-warning">
           <AlertCircle className="h-4 w-4" />
-          <span className="text-sm font-medium">
-            Awaiting human review
-          </span>
+          <span className="text-sm font-medium">Awaiting human review</span>
         </div>
         <Textarea
+          aria-label="Review comment"
+          maxLength={5000}
           value={comment}
           onChange={(e) => setComment(e.target.value)}
           placeholder="Add a review comment (optional for approve/reject, recommended for revisions)…"
@@ -144,7 +156,9 @@ export default function ReviewBanner({
           className="mb-3"
         />
         {error && (
-          <p className="mb-3 font-mono text-xs text-error">{error}</p>
+          <p role="alert" className="mb-3 text-sm text-error">
+            {error}
+          </p>
         )}
         <div className="flex flex-wrap gap-2">
           <Button
@@ -227,7 +241,9 @@ export default function ReviewBanner({
           </div>
         </div>
         {error && (
-          <p className="mb-3 font-mono text-xs text-error">{error}</p>
+          <p role="alert" className="mb-3 text-sm text-error">
+            {error}
+          </p>
         )}
         {needsProvider && (
           <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-warning/50 bg-warning/10 px-4 py-3 text-sm text-warning">

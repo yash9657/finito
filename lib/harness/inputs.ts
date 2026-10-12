@@ -9,9 +9,8 @@
  *
  * So steps reload instead. A process-local cache keyed by workflow id makes that cheap after
  * the first step, and it is safe precisely because `workflow_files` rows are append-only in
- * practice — a run's files do not change once it starts. The cache is a plain Map with no
- * eviction, which is correct for a serverless process whose lifetime is one or a few runs; if
- * a long-lived worker ever hosts thousands of runs, this is where a bounded LRU goes.
+ * practice — a run's files do not change once it starts. The cache evicts least-recently-used runs at 24 entries or
+ * 64 MiB of estimated serialized source data. Oversized runs bypass the cache.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -21,7 +20,23 @@ import type { ParsedFile, WorkflowFile } from "@/lib/types";
 const STORAGE_BUCKET = "workflow-files";
 
 /** workflowId → parsed files, keyed by file_type. */
-const cache = new Map<string, Record<string, ParsedFile>>();
+const cache = new Map<string, { files: Record<string, ParsedFile>; bytes: number }>();
+const MAX_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_CACHE_RUNS = 24;
+let cacheBytes = 0;
+
+function cacheFiles(workflowId: string, files: Record<string, ParsedFile>): void {
+  clearWorkflowFiles(workflowId);
+  const bytes = Buffer.byteLength(JSON.stringify(files), "utf8");
+  if (bytes > MAX_CACHE_BYTES) return;
+  while (cache.size >= MAX_CACHE_RUNS || cacheBytes + bytes > MAX_CACHE_BYTES) {
+    const oldest = cache.keys().next().value;
+    if (!oldest) break;
+    clearWorkflowFiles(oldest);
+  }
+  cache.set(workflowId, { files, bytes });
+  cacheBytes += bytes;
+}
 
 /**
  * Download and parse every file attached to a workflow, memoized per process.
@@ -35,7 +50,11 @@ export async function loadWorkflowFiles(
   workflowId: string,
 ): Promise<Record<string, ParsedFile>> {
   const cached = cache.get(workflowId);
-  if (cached) return cached;
+  if (cached) {
+    cache.delete(workflowId);
+    cache.set(workflowId, cached);
+    return cached.files;
+  }
 
   const { data, error } = await db
     .from("workflow_files")
@@ -54,10 +73,13 @@ export async function loadWorkflowFiles(
       );
     }
     const buffer = Buffer.from(await blob.arrayBuffer());
-    files[row.file_type] = parseFile(buffer, row.file_type, { filename: row.filename });
+    const parsed = parseFile(buffer, row.file_type, { filename: row.filename });
+    if (parsed.meta.sha256 !== row.sha256) throw new Error(`Source integrity check failed for ${row.filename}`);
+    if (!parsed.rows.length || parsed.errors.length) throw new Error(`${row.filename}: ${parsed.errors.length} invalid rows. Correct the source file before running analysis.`);
+    files[row.file_type] = parsed;
   }
 
-  cache.set(workflowId, files);
+  cacheFiles(workflowId, files);
   return files;
 }
 
@@ -66,11 +88,16 @@ export function primeWorkflowFiles(
   workflowId: string,
   files: Record<string, ParsedFile>,
 ): void {
-  cache.set(workflowId, files);
+  cacheFiles(workflowId, files);
 }
 
 /** Drop a run's cached files. Called when a run finishes, and by tests between cases. */
 export function clearWorkflowFiles(workflowId?: string): void {
-  if (workflowId) cache.delete(workflowId);
-  else cache.clear();
+  if (workflowId) {
+    cacheBytes -= cache.get(workflowId)?.bytes ?? 0;
+    cache.delete(workflowId);
+  } else {
+    cache.clear();
+    cacheBytes = 0;
+  }
 }

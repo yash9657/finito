@@ -232,12 +232,14 @@ export async function chatCompletionsComplete(
   jsonMode: JsonMode,
   params: LLMCompleteParams,
   defaultBaseUrl: string,
+  buildBody: typeof buildChatCompletionsBody = buildChatCompletionsBody,
+  routingHeaders: Record<string, string> = {},
 ): Promise<LLMCompleteResult> {
-  const baseUrl = (params.baseUrl ?? defaultBaseUrl).replace(/\/$/, "");
-  const url = `${baseUrl}/v1/chat/completions`;
-  const body = buildChatCompletionsBody(params, jsonMode);
+  const baseUrl = (params.baseUrl ?? defaultBaseUrl).replace(/\/+$/, "");
+  const url = `${baseUrl}${baseUrl.endsWith("/v1") ? "" : "/v1"}/chat/completions`;
+  const body = buildBody(params, jsonMode);
 
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = { ...routingHeaders, "Content-Type": "application/json" };
   if (params.apiKey) headers.Authorization = `Bearer ${params.apiKey}`;
 
   const started = Date.now();
@@ -248,7 +250,10 @@ export async function chatCompletionsComplete(
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+        signal: params.signal
+          ? AbortSignal.any([params.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)])
+          : AbortSignal.timeout(LLM_TIMEOUT_MS),
+        redirect: "error",
       });
     } catch {
       // Network/timeout — never include the request body in the message.
@@ -264,14 +269,36 @@ export async function chatCompletionsComplete(
     if (!res.ok) {
       throw new LLMProviderError(id, res.status, mapStatus(res.status));
     }
-    return (await res.json()) as ChatCompletionsResponse;
-  });
+    try {
+      return (await res.json()) as ChatCompletionsResponse;
+    } catch {
+      throw new LLMProviderError(id, undefined, "Provider returned an invalid response");
+    }
+  }, params.signal);
   const latencyMs = Date.now() - started;
 
-  const choice = json.choices?.[0];
+  const choice = json?.choices?.[0];
+  if (!choice?.message) throw new LLMProviderError(id, undefined, "Provider returned no completion");
+  if (choice.finish_reason === "length") {
+    throw new LLMProviderError(id, undefined, "Model output exceeded its token limit. Use a smaller input or a model with a larger output budget.");
+  }
+  if (choice.finish_reason === "content_filter") {
+    throw new LLMProviderError(id, undefined, "Provider declined this request");
+  }
   const content = choice?.message?.content;
   const tools = params.tools ?? [];
-  let toolCalls = toCanonicalToolCalls(choice?.message?.tool_calls, tools);
+  const rawCalls = choice.message.tool_calls;
+  if (rawCalls !== undefined && !Array.isArray(rawCalls)) {
+    throw new LLMProviderError(id, undefined, "Provider returned malformed tool calls");
+  }
+  let toolCalls = toCanonicalToolCalls(rawCalls, tools);
+  // A partially decoded action turn is not a complete plan. Never execute the valid subset
+  // while silently discarding the rest, or mistake failed tool decoding for a final answer.
+  if ((rawCalls?.length ?? 0) !== toolCalls.length ||
+      new Set(toolCalls.map(call => call.id)).size !== toolCalls.length ||
+      (choice.finish_reason === "tool_calls" && toolCalls.length === 0)) {
+    throw new LLMProviderError(id, undefined, "Provider returned invalid or unsupported tool calls");
+  }
 
   // A tool-only turn legitimately carries no content, so the strict check applies only when we
   // asked for no tools — otherwise the normal shape of a tool call would read as a failure.
@@ -286,6 +313,9 @@ export async function chatCompletionsComplete(
   // schema, and mark it — see D-G17 on why this is never silent.
   if (toolCalls.length === 0 && tools.length > 0 && text.length > 0) {
     toolCalls = salvageToolCalls(text, tools).toolCalls;
+  }
+  if (text.trim().length === 0 && toolCalls.length === 0) {
+    throw new LLMProviderError(id, undefined, "Provider returned an empty completion");
   }
 
   return {

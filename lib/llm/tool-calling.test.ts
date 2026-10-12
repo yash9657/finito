@@ -318,7 +318,7 @@ describe("responses normalize to canonical tool calls", () => {
     expect(result.toolCalls?.[0].salvageStrategy).toBeDefined();
   });
 
-  it("openai: drops a call naming a tool that was never offered", async () => {
+  it("openai: rejects a turn naming a tool that was never offered", async () => {
     stubFetch({
       choices: [
         {
@@ -330,8 +330,7 @@ describe("responses normalize to canonical tool calls", () => {
         },
       ],
     });
-    const result = await openaiProvider.complete(params());
-    expect(result.toolCalls).toBeUndefined();
+    await expect(openaiProvider.complete(params())).rejects.toThrow("invalid or unsupported tool calls");
   });
 
   it("google: synthesizes positional ids so two calls to ONE tool stay distinct (D-G15)", async () => {
@@ -438,10 +437,9 @@ describe("responses normalize to canonical tool calls", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("a tool-free turn is a normal outcome, not an error", () => {
-  it("openai: no content and no tool calls is only an error when no tools were offered", async () => {
+  it("openai: an empty completion cannot masquerade as a successful tool-free answer", async () => {
     stubFetch({ choices: [{ finish_reason: "stop", message: { content: null } }] });
-    // With tools offered, an empty turn is odd but recoverable — the loop tells the model so.
-    await expect(openaiProvider.complete(params())).resolves.toMatchObject({ content: "" });
+    await expect(openaiProvider.complete(params())).rejects.toThrow("empty completion");
     // Without them, the legacy contract stands: no content is a hard failure.
     await expect(
       openaiProvider.complete(params({ tools: undefined, conversation: undefined, messages: [{ role: "user", content: "x" }] })),

@@ -238,7 +238,9 @@ export const googleProvider: LLMProvider = {
             "x-goog-api-key": params.apiKey as string,
           },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(LLM_TIMEOUT_MS),
+          signal: params.signal
+            ? AbortSignal.any([params.signal, AbortSignal.timeout(LLM_TIMEOUT_MS)])
+            : AbortSignal.timeout(LLM_TIMEOUT_MS),
         });
       } catch {
         throw new LLMProviderError("google", undefined, "Endpoint unreachable");
@@ -260,7 +262,7 @@ export const googleProvider: LLMProvider = {
         throw new LLMProviderError("google", res.status, label);
       }
       return (await res.json()) as GenerateContentResponse;
-    });
+    }, params.signal);
     const latencyMs = Date.now() - started;
 
     const candidate = json.candidates?.[0];

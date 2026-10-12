@@ -27,6 +27,46 @@ function answer(overrides: Partial<RawAnswer> = {}): RawAnswer {
 }
 
 describe("figures are computed from cited rows, not taken from the model", () => {
+  it("preserves cents when large intermediate sums exceed floating-point precision", () => {
+    const largeRows = [Number.MAX_SAFE_INTEGER, 2, -2].map((amountCents, index) => ({ ...a, sourceId: `large-${index}`, amountCents }));
+    const result = validateAnswer(answer({ findings: [], citations: [], figures: [{ ref: "gap", label: "Gap", operation: "sum", sourceIds: largeRows.map(row => row.sourceId) }] }), largeRows, { partial: false });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.answer.figures[0].valueCents).toBe(Number.MAX_SAFE_INTEGER);
+      expect(result.answer.prose).toContain("$90,071,992,547,409.91");
+    }
+  });
+
+  it("rounds an extreme average in integer cents without float-division drift", () => {
+    const largeRows = [Number.MAX_SAFE_INTEGER, 0, 0].map((amountCents, index) => ({ ...a, sourceId: `large-${index}`, amountCents }));
+    const result = validateAnswer(answer({ findings: [], citations: [], figures: [{ ref: "gap", label: "Gap", operation: "average", sourceIds: largeRows.map(row => row.sourceId) }] }), largeRows, { partial: false });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.answer.figures[0].valueCents).toBe(3002399751580330);
+  });
+  it("refuses a repeated citation that would double-count an amount", () => {
+    const result = validateAnswer(answer({ figures: [{ ref: "gap", label: "Gap", operation: "sum", sourceIds: [a.sourceId, a.sourceId] }] }), rows, { partial: false });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.problems.join(" ")).toContain("repeats a source");
+  });
+
+  it("refuses a monetary sum across different financial sources", () => {
+    const foreign = { ...b, sourceId: "foreign-row", workflowId: "another-upload", dataset: "bank_statement" as const };
+    const result = validateAnswer(answer({ figures: [{ ref: "gap", label: "Gap", operation: "sum", sourceIds: [a.sourceId, foreign.sourceId] }] }), [...rows, foreign], { partial: false });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.problems.join(" ")).toContain("combines financial sources");
+  });
+
+  it("rejects a difference over three rows instead of silently discarding the middle row", () => {
+    const result = validateAnswer(answer({ figures: [{ ref: "gap", label: "Gap", operation: "difference", sourceIds: rows.slice(0, 3).map(row => row.sourceId) }] }), rows, { partial: false });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.problems.join(" ")).toContain("exactly two");
+  });
+
+  it.each(["€42,000", "GBP 50", "₹900", "50 CHF"])("rejects unsupported monetary literals in finding text (%s)", literal => {
+    const result = validateAnswer(answer({ findings: [{ statement: `The unexplained amount is ${literal}`, sourceIds: [a.sourceId] }] }), rows, { partial: false });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.problems.join(" ")).toContain("monetary amounts written directly");
+  });
   it("sums the cited rows and substitutes the result into the prose", () => {
     const result = validateAnswer(answer(), rows, { partial: false });
     expect(result.ok).toBe(true);

@@ -9,6 +9,13 @@ import { createServerClient } from "@supabase/ssr";
  */
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
+  // Marketing does not depend on database availability. API routes have JSON auth guards.
+  if (request.nextUrl.pathname === "/") return supabaseResponse;
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    if (request.nextUrl.pathname === "/login") return supabaseResponse;
+    if (request.nextUrl.pathname.startsWith("/api/")) return NextResponse.json({ error: "Service is not configured" }, { status: 503 });
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -45,9 +52,16 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith("/auth");
 
   if (!user && !isPublicRoute) {
+    if (pathname.startsWith("/api/")) {
+      const response = NextResponse.json({ error: "Session expired. Sign in again." }, { status: 401 });
+      for (const cookie of supabaseResponse.cookies.getAll()) response.cookies.set(cookie);
+      return response;
+    }
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    return NextResponse.redirect(url);
+    const response = NextResponse.redirect(url);
+    for (const cookie of supabaseResponse.cookies.getAll()) response.cookies.set(cookie);
+    return response;
   }
 
   // IMPORTANT: Return supabaseResponse as-is so refreshed auth cookies survive.

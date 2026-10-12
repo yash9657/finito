@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import DemoMount from "@/demo/engine/DemoMount";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -13,8 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "FinFlow",
-  description: "Multi-agent finance automation platform",
+  title: { default: "FinFlow — Source to sign-off", template: "%s · FinFlow" },
+  description:
+    "Reconcile accounts, review invoices, and explain variances with a clear record of sources, calculations, and approvals.",
 };
 
 export default function RootLayout({
@@ -28,6 +30,8 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        {/* The guided demo overlay. Off unless NEXT_PUBLIC_DEMO=1; see demo/README.md. */}
+        {process.env.NEXT_PUBLIC_DEMO === "1" && <DemoMount />}
       </body>
     </html>
   );

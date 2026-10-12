@@ -20,6 +20,7 @@
 import { createHash } from "node:crypto";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import { validateWorkbookContainer } from "@/lib/data/workbook-container";
 
 import type {
   FileType,
@@ -54,9 +55,10 @@ export function parseFile(
   const isExcel = detectExcel(input, options);
 
   // Raw records keyed by their (still-original) header strings, in file order.
-  const rawRecords = isExcel ? readExcel(input) : readCsv(input);
-
   const spec = FIELD_SPECS[fileType];
+  const rawRecords = isExcel ? readExcel(input, spec) : readCsv(input);
+
+  if (rawRecords.length > 100_000) throw new Error("File exceeds the supported 100,000-row limit. Split it into smaller periods.");
   const rows: ParsedRow[] = [];
   const errors: ParseError[] = [];
   let idCounter = 0;
@@ -104,10 +106,17 @@ function readCsv(input: Buffer | string): Record<string, unknown>[] {
     header: true,
     skipEmptyLines: true,
   });
+  if (result.errors.length > 0) throw new Error(`Invalid CSV: ${result.errors[0].message}`);
+  const headers = (result.meta.fields ?? []).map(normalizeHeader);
+  if (Object.keys(result.meta.renamedHeaders ?? {}).length || new Set(headers).size !== headers.length) {
+    throw new Error("Duplicate column headers. Give every source column a unique name.");
+  }
   return Array.isArray(result.data) ? result.data : [];
 }
 
-function readExcel(input: Buffer | string): Record<string, unknown>[] {
+function readExcel(input: Buffer | string, spec: FileTypeSpec): Record<string, unknown>[] {
+  const bytes = typeof input === "string" ? Buffer.from(input, "binary") : input;
+  validateWorkbookContainer(bytes, bytes[0] === 0xd0 ? "xls" : "xlsx");
   const wb =
     typeof input === "string"
       ? XLSX.read(input, { type: "string" })
@@ -115,11 +124,34 @@ function readExcel(input: Buffer | string): Record<string, unknown>[] {
   const firstSheetName = wb.SheetNames[0];
   if (!firstSheetName) return [];
   const sheet = wb.Sheets[firstSheetName];
-  // `raw: false` yields formatted strings (dates/amounts) so the shared string
-  // normalizer handles them identically to CSV cells.
-  return XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-    defval: "",
-    raw: false,
+  // Read the original header row before SheetJS can silently rename duplicates.
+  const formatted = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1, defval: "", raw: false, blankrows: true,
+  });
+  if (formatted.length === 0) return [];
+  const headers = formatted[0].map((value) => String(value ?? ""));
+  const normalized = headers.map(normalizeHeader).filter(Boolean);
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error("Duplicate column headers. Give every source column a unique name.");
+  }
+  // Formatting such as `$0` must never round an underlying $10.49 to $10.
+  // Keep displayed dates, but read numeric amounts from the underlying cell value.
+  const rawRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1, defval: "", raw: true, blankrows: true,
+  });
+  const amountHeaders = new Set(spec.fields.filter((field) => field.kind === "amount").flatMap((field) => field.aliases));
+  return formatted.slice(1).map((values, index) => {
+    const record: Record<string, unknown> = Object.create(null);
+    values.forEach((value, column) => {
+      const header = headers[column] ?? "";
+      if (!normalizeHeader(header)) {
+        if (value !== "") throw new Error("A populated spreadsheet column has no header.");
+        return;
+      }
+      const rawValue = rawRows[index + 1]?.[column];
+      record[header] = amountHeaders.has(normalizeHeader(header)) && typeof rawValue === "number" ? rawValue : value;
+    });
+    return record;
   });
 }
 
@@ -160,7 +192,7 @@ export function normalizeHeader(header: string): string {
 }
 
 function normalizeRecord(raw: Record<string, unknown>): Record<string, string> {
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   for (const [key, value] of Object.entries(raw)) {
     const nk = normalizeHeader(key);
     if (!nk) continue;
@@ -244,32 +276,32 @@ function isoFromYMD(year: number, month: number, day: number): string | null {
  */
 export function parseAmountCents(value: string): number | null {
   let clean = value.trim();
-  if (!clean) return null;
-
-  let negative = false;
-  if (/^\(.*\)$/.test(clean)) {
-    negative = true;
-    clean = clean.slice(1, -1);
-  }
-
-  clean = clean.replace(/[$,\s]/g, "");
+  if (!clean || clean.length > 80) return null;
+  const parenthesized = clean.startsWith("(") && clean.endsWith(")");
+  if (parenthesized) clean = clean.slice(1, -1).trim();
+  let negative = parenthesized;
+  const leadingCurrency = clean.startsWith("$");
+  if (leadingCurrency) clean = clean.slice(1).trimStart();
   if (clean.startsWith("-")) {
+    if (parenthesized) return null; // ambiguous double sign
     negative = true;
-    clean = clean.slice(1);
+    clean = clean.slice(1).trimStart();
   }
-  if (clean === "" || !/^\d*\.?\d+$|^\d+\.?\d*$/.test(clean)) return null;
-
-  const parsed = Number.parseFloat(clean);
-  if (!Number.isFinite(parsed)) return null;
-
-  const cents = Math.round(parsed * 100);
-  return negative ? -cents : cents;
+  if (!leadingCurrency) clean = clean.replace(/^\$\s*/, "");
+  // Reject malformed thousands groups, exponent notation, and embedded whitespace.
+  if (!/^(?:\d{1,3}(?:,\d{3})+|\d+|)(?:\.\d*)?$/.test(clean) || !/\d/.test(clean)) return null;
+  const [whole, fraction = ""] = clean.replace(/,/g, "").split(".");
+  // Decimal arithmetic: round half away from zero, without binary float drift.
+  let cents = BigInt(whole || "0") * BigInt(100) + BigInt((fraction + "00").slice(0, 2));
+  if (fraction.length > 2 && fraction[2] >= "5") cents += BigInt(1);
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return cents === BigInt(0) ? 0 : Number(cents) * (negative ? -1 : 1);
 }
 
-/** Normalize a period to `YYYY-MM`; lenient (period is not a hard-error field). */
+/** Normalize a whole month or valid calendar date to `YYYY-MM`. */
 function parsePeriod(value: string): string {
   const v = value.trim();
-  const m = /^(\d{4})-(\d{1,2})/.exec(v);
+  const m = /^(\d{4})-(\d{1,2})$/.exec(v);
   if (m) return `${m[1]}-${String(Number(m[2])).padStart(2, "0")}`;
   const iso = parseDate(v);
   if (iso) return iso.slice(0, 7);
@@ -419,17 +451,34 @@ function lookup(record: Record<string, string>, aliases: string[]): string | und
 function mapRecord(record: Record<string, string>, spec: FileTypeSpec): MapResult {
   const row: Record<string, unknown> = {};
 
+  // The persisted financial schema is USD cents and has no FX conversion layer.
+  // Never discard an explicit currency column and silently turn EUR/CAD into USD.
+  const currencyColumns = ["currency", "currency_code", "ccy"].filter((column) => column in record);
+  if (currencyColumns.length > 1) return { ok: false, message: "Ambiguous currency columns; keep one currency column with ISO code USD." };
+  if (currencyColumns.length === 1 && record[currencyColumns[0]].trim().toUpperCase() !== "USD") {
+    return { ok: false, message: "Unsupported or missing currency. This workflow accepts USD only; convert to a documented USD reporting basis before upload." };
+  }
+
   for (const f of spec.fields) {
+    const present = f.aliases.filter((alias) => alias in record);
+    if (present.length > 1) {
+      return { ok: false, message: `Ambiguous columns for "${f.field}": ${present.join(", ")}. Keep one source column for this field.` };
+    }
     const rawValue = lookup(record, f.aliases);
     const value = (rawValue ?? "").trim();
 
     switch (f.kind) {
       case "text": {
+        if (["department", "category", "invoiceNumber", "poNumber", "vendorName"].includes(f.field) && !value) {
+          return { ok: false, message: `Missing required identifier "${f.field}"` };
+        }
         row[f.field] = value;
         break;
       }
       case "period": {
-        row[f.field] = parsePeriod(value);
+        const period = parsePeriod(value);
+        if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) return { ok: false, message: `Invalid period in "${f.field}"; use YYYY-MM` };
+        row[f.field] = period;
         break;
       }
       case "date": {

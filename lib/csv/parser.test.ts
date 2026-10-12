@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as XLSX from "xlsx";
 
 import type { BankTxn, ErpTxn, Invoice } from "@/lib/types";
 
@@ -23,6 +24,89 @@ describe("parseAmountCents — money → integer cents (D7)", () => {
   it("returns null for empty or non-numeric input", () => {
     expect(parseAmountCents("")).toBeNull();
     expect(parseAmountCents("N/A")).toBeNull();
+  });
+  it.each([
+    ["1.005", 101], ["-1.005", -101], ["(1.005)", -101],
+    ["$-1.005", -101], ["($ 1.005)", -101],
+    ["2.675", 268], ["0.0049", 0], ["-0.0001", 0],
+    ["90071992547409.91", Number.MAX_SAFE_INTEGER],
+  ])("rounds %s exactly to %s cents", (input, expected) => {
+    expect(parseAmountCents(input)).toBe(expected);
+  });
+  it.each(["90071992547409.915", "90071992547409.92", "1,00", "1 000", "1e3", "(-5)", "($-5)", "$$5", "--5", "$", "."])("rejects unsafe or ambiguous money %s", (input) => {
+    expect(parseAmountCents(input)).toBeNull();
+  });
+});
+
+describe("parseFile — financial input integrity", () => {
+  it("does not silently discard a non-USD currency column", () => {
+    const result = parseFile("date,amount,currency\n2026-01-01,100,USD\n2026-01-02,100,EUR", "erp_export");
+    expect(result.rows).toHaveLength(1);
+    expect(result.errors[0].message).toContain("accepts USD only");
+    expect(parseFile("date,amount,ccy\n2026-01-01,100,CAD", "erp_export").rows).toHaveLength(0);
+  });
+  it("rejects malformed CSV rather than ingesting a partial record", () => {
+    expect(() => parseFile('date,amount\n2026-06-01,100,unmapped', "erp_export")).toThrow(/Invalid CSV/);
+    expect(() => parseFile('date,amount\n2026-06-01,"100', "erp_export")).toThrow(/Invalid CSV/);
+  });
+
+  it("rejects normalized duplicate headers", () => {
+    expect(() => parseFile("date,amount, Amount \n2026-06-01,100,200", "erp_export")).toThrow(/Duplicate column/);
+  });
+
+  it("requires unambiguous amount aliases instead of silently preferring one", () => {
+    const result = parseFile("date,amount,value\n2026-06-01,100,200", "erp_export");
+    expect(result.rows).toHaveLength(0);
+    expect(result.errors[0].message).toMatch(/Ambiguous columns/);
+  });
+
+  it.each(["2026-01garbage", "2026-012", "2026-02-30", "2026-00", "2026-13", ""])("rejects invalid period %s", (period) => {
+    const result = parseFile(`department,category,budget,period\nFinance,Payroll,100,${period}`, "budget");
+    expect(result.rows).toHaveLength(0);
+    expect(result.errors[0].message).toMatch(/Invalid period/);
+  });
+
+  it.each(["2026-1", "2026-01-31", "1/31/2026"])("normalizes valid period %s", (period) => {
+    const result = parseFile(`department,category,budget,period\nFinance,Payroll,100,${period}`, "budget");
+    expect(result.rows[0].period).toBe("2026-01");
+  });
+
+  it("rejects missing financial dimensions and invoice identities", () => {
+    const budget = parseFile("department,category,budget,period\n,Payroll,100,2026-01", "budget");
+    const invoice = parseFile("invoice_no,vendor,amount,invoice_date,due_date\nINV-1,,100,2026-01-01,2026-02-01", "invoice");
+    expect(budget.errors[0].message).toMatch(/department/);
+    expect(invoice.errors[0].message).toMatch(/vendorName/);
+    expect(budget.rows).toHaveLength(0);
+    expect(invoice.rows).toHaveLength(0);
+  });
+
+  function excel(rows: unknown[][], moneyFormat?: string): Buffer {
+    const book = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    if (moneyFormat) sheet.B2.z = moneyFormat;
+    XLSX.utils.book_append_sheet(book, sheet, "Export");
+    return XLSX.write(book, { type: "buffer", bookType: "xlsx" }) as Buffer;
+  }
+
+  it("rejects Excel duplicate headers before automatic renaming", () => {
+    const input = excel([["date", "amount", "amount"], ["2026-06-01", 10, 20]]);
+    expect(() => parseFile(input, "erp_export", { format: "xlsx" })).toThrow(/Duplicate column/);
+  });
+
+  it("uses underlying Excel amounts even when displayed without cents", () => {
+    const input = excel([["date", "amount"], ["2026-06-01", 10.49]], "$0");
+    expect(parseFile(input, "erp_export", { format: "xlsx" }).rows[0].amountCents).toBe(1049);
+  });
+
+  it("preserves Excel source row numbers across empty rows", () => {
+    const input = excel([["date", "amount"], ["2026-06-01", 10], ["", ""], ["bad-date", 20]]);
+    const parsed = parseFile(input, "erp_export", { format: "xlsx" });
+    expect(parsed.errors[0].row).toBe(4);
+  });
+
+  it("enforces the supported row bound", () => {
+    const csv = "date,amount\n" + "2026-06-01,1\n".repeat(100_001);
+    expect(() => parseFile(csv, "erp_export")).toThrow(/100,000-row limit/);
   });
 });
 

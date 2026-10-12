@@ -31,20 +31,21 @@ export default async function ModelsSettingsPage() {
   const llmSteps = llmStepsForMatrix();
 
   return (
-    <div className="mx-auto max-w-4xl px-8 py-8">
+    <div className="page-container min-w-0">
       <header className="mb-8">
         <Link
           href="/settings"
-          className="mb-2 inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
+          className="mb-3 inline-flex min-h-11 items-center gap-2 text-sm text-muted transition-colors hover:text-foreground"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           Back to settings
         </Link>
-        <h1 className="text-2xl font-semibold tracking-tight">Models</h1>
-        <p className="mt-1 text-sm text-muted">
-          Configure LLM providers, pin workflow steps to specific models, and review token
-          usage. Keys are encrypted at rest and never returned to the browser.
-          {!isAdmin && " You have read-only access; ask an admin to make changes."}
+        <h1 className="page-title">Models & usage</h1>
+        <p className="page-description max-w-3xl">
+          Connect model providers, choose which models run your workflows, and
+          review usage. API keys are encrypted at rest.
+          {!isAdmin &&
+            " You have read-only access; ask an admin to make changes."}
         </p>
       </header>
 

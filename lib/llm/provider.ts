@@ -22,7 +22,7 @@ import type {
   ToolDefinition,
 } from "@/lib/llm/messages";
 
-export type ProviderId = "anthropic" | "openai" | "google" | "ollama" | "custom";
+export type ProviderId = "fireworks" | "anthropic" | "openai" | "google" | "ollama" | "custom";
 
 export interface LLMCompleteParams {
   systemPrompt: string;
@@ -52,6 +52,10 @@ export interface LLMCompleteParams {
   /** Transport config resolved by the router — never read from env inside providers. */
   apiKey?: string; // absent for keyless endpoints (ollama, some custom)
   baseUrl?: string; // required for ollama/custom; optional override elsewhere
+  /** Caller cancellation/deadline, honored by HTTP transports. */
+  signal?: AbortSignal;
+  /** Server-resolved routing hints; never derived from user prompt text. */
+  cacheScope?: { organizationId: string; sessionId?: string };
 }
 
 export interface LLMCompleteResult {
@@ -59,6 +63,8 @@ export interface LLMCompleteResult {
   modelUsed: string; // exact model id echoed by the provider (or params.model)
   tokensIn: number; // 0 if the provider reports none (some Ollama builds)
   tokensOut: number;
+  /** Subset of tokensIn reported by the provider, never subtracted from run limits. */
+  cachedTokensIn?: number;
   latencyMs: number;
   raw: unknown; // full provider response body (router redacts+caps, D-P11)
   reasoningNative?: string; // provider-native reasoning (Anthropic thinking blocks)
@@ -120,6 +126,8 @@ export async function defaultTestConnection(
   provider: Pick<LLMProvider, "id" | "complete">,
   params: TestConnectionParams,
 ): Promise<TestConnectionResult> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
       provider.complete({
@@ -130,10 +138,14 @@ export async function defaultTestConnection(
         responseFormat: "text",
         apiKey: params.apiKey,
         baseUrl: params.baseUrl,
+        signal: controller.signal,
       }),
       new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new LLMProviderError(provider.id, undefined, "Endpoint unreachable")),
+        timer = setTimeout(
+          () => {
+            controller.abort();
+            reject(new LLMProviderError(provider.id, undefined, "Connection test timed out"));
+          },
           TEST_TIMEOUT_MS,
         ),
       ),
@@ -143,6 +155,8 @@ export async function defaultTestConnection(
     // Only a mapped message escapes — never the request/response body (§9).
     const message = err instanceof LLMProviderError ? err.message : "Connection test failed";
     return { ok: false, error: message };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -168,8 +182,19 @@ export const LLM_TIMEOUT_MS = 120_000;
 const RETRY_AFTER_CAP_MS = 60_000;
 const SERVER_ERROR_BACKOFF_MS = 2_000;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error("Request cancelled"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -195,7 +220,8 @@ export class TransportError extends Error {
  *   - anything else: rethrow immediately.
  * `fn` should throw a `TransportError` on 429/5xx; any other throw propagates as-is.
  */
-export async function withTransportRetry<T>(fn: () => Promise<T>): Promise<T> {
+export async function withTransportRetry<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
   try {
     return await fn();
   } catch (err) {
@@ -206,11 +232,13 @@ export async function withTransportRetry<T>(fn: () => Promise<T>): Promise<T> {
           raw != null && Number.isFinite(raw) && raw > 0
             ? Math.min(raw * 1000, RETRY_AFTER_CAP_MS)
             : 0;
-        await sleep(delay);
+        await sleep(delay, signal);
+        signal?.throwIfAborted();
         return fn();
       }
       if (err.status >= 500) {
-        await sleep(SERVER_ERROR_BACKOFF_MS);
+        await sleep(SERVER_ERROR_BACKOFF_MS, signal);
+        signal?.throwIfAborted();
         return fn();
       }
     }
@@ -222,5 +250,7 @@ export async function withTransportRetry<T>(fn: () => Promise<T>): Promise<T> {
 export function parseRetryAfter(header: string | null): number | null {
   if (header == null) return null;
   const n = Number(header);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  if (Number.isFinite(n)) return n > 0 ? n : null;
+  const date = Date.parse(header);
+  return Number.isFinite(date) && date > Date.now() ? (date - Date.now()) / 1000 : null;
 }

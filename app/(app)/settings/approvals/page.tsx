@@ -28,21 +28,22 @@ export default async function ApprovalsSettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl px-8 py-8">
+    <div className="page-container min-w-0">
       <header className="mb-8">
         <Link
           href="/settings"
-          className="mb-2 inline-flex items-center gap-1.5 text-xs text-muted transition-colors hover:text-foreground"
+          className="mb-3 inline-flex min-h-11 items-center gap-2 text-sm text-muted transition-colors hover:text-foreground"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           Back to settings
         </Link>
-        <h1 className="text-2xl font-semibold tracking-tight">Approvals</h1>
-        <p className="mt-1 text-sm text-muted">
-          Ceilings your organization enforces before any human is asked, and the standing
-          rules that let routine actions proceed without one. With no policy and no rules,
-          every consequential action is decided by a person.
-          {!isAdmin && " You have read-only access; ask an admin to make changes."}
+        <h1 className="page-title">Approval controls</h1>
+        <p className="page-description max-w-3xl">
+          Define who can authorize actions and which limits your organization
+          enforces. These controls record authorization; they do not send
+          payments.
+          {!isAdmin &&
+            " You have read-only access; ask an admin to make changes."}
         </p>
       </header>
 

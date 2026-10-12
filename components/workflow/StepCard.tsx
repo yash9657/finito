@@ -4,8 +4,8 @@ import * as React from "react";
 import { ChevronRight, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { formatTime, shortHash } from "@/lib/format";
-import type { StepRow, StepStatus, Track } from "@/lib/types";
+import { shortHash } from "@/lib/format";
+import type { StepRow, StepStatus } from "@/lib/types";
 
 /* Status glyph — pending hollow circle · running ping dot · awaiting_approval shield ·
    complete check · error ✕. */
@@ -58,12 +58,6 @@ function StatusGlyph({ status }: { status: StepStatus }) {
   );
 }
 
-// Track is a layout hint, not a status — keep the chip neutral so parallel tracks
-// don't read as two clashing accent colors.
-function trackVariant(_track: Track): "muted" {
-  return "muted";
-}
-
 function Section({
   label,
   children,
@@ -73,7 +67,7 @@ function Section({
 }) {
   return (
     <div className="space-y-1">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+      <div className="text-xs font-medium text-muted">
         {label}
       </div>
       {children}
@@ -103,8 +97,10 @@ export default function StepCard({ step }: { step: StepRow }) {
 
   // A provenance footer shows once a provider actually ran (D-P14). Deterministic steps
   // and the skip-adjudication path leave provider_used null.
-  const hasProvenance = step.provider_used !== null && step.provider_used !== undefined;
-  const hasInput = step.input_snapshot !== null && step.input_snapshot !== undefined;
+  const hasProvenance =
+    step.provider_used !== null && step.provider_used !== undefined;
+  const hasInput =
+    step.input_snapshot !== null && step.input_snapshot !== undefined;
   const hasOutput = step.output !== null && step.output !== undefined;
   const hasSources = Array.isArray(step.sources) && step.sources.length > 0;
   const hasReasoning = !!step.agent_reasoning;
@@ -126,6 +122,8 @@ export default function StepCard({ step }: { step: StepRow }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={`step-${step.id}`}
         className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
       >
         <ChevronRight
@@ -140,7 +138,7 @@ export default function StepCard({ step }: { step: StepRow }) {
         >
           <StatusGlyph status={step.status} />
         </span>
-        <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+        <span className="min-w-0 flex-1 text-sm text-foreground">
           <span className="mr-1.5 font-mono text-xs text-muted">
             {String(step.step_number).padStart(2, "0")}
           </span>
@@ -148,22 +146,27 @@ export default function StepCard({ step }: { step: StepRow }) {
         </span>
         {step.status === "awaiting_approval" ? (
           <Badge variant="warning" className="shrink-0">
-            gated
+            Approval
           </Badge>
         ) : (
-          <Badge variant={trackVariant(step.track)} className="shrink-0">
-            {step.track}
+          <Badge variant="muted" className="shrink-0">
+            {step.status === "complete"
+              ? "Complete"
+              : step.status === "running"
+                ? "Running"
+                : step.status === "error"
+                  ? "Failed"
+                  : "Pending"}
           </Badge>
         )}
-        {step.status === "complete" && step.completed_at && (
-          <span className="shrink-0 font-mono text-[11px] text-muted">
-            {formatTime(step.completed_at)}
-          </span>
-        )}
+
       </button>
 
       {open && (
-        <div className="ff-step-anim space-y-3 border-t border-border px-3 py-3 text-xs leading-relaxed">
+        <div
+          id={`step-${step.id}`}
+          className="ff-step-anim space-y-3 border-t border-border px-3 py-3 text-xs leading-relaxed"
+        >
           {hasReasoning && (
             <Section label="Reasoning">
               <p className="whitespace-pre-wrap text-foreground/90">
@@ -174,7 +177,7 @@ export default function StepCard({ step }: { step: StepRow }) {
 
           {hasInput && (
             <Section label="Input">
-              <pre className="max-h-48 overflow-auto rounded border border-border bg-background/60 p-2 font-mono text-[11px] text-foreground/80">
+              <pre className="max-h-48 overflow-auto rounded border border-border bg-background/60 p-2 font-mono text-xs text-foreground/80">
                 {pretty(step.input_snapshot)}
               </pre>
             </Section>
@@ -182,7 +185,7 @@ export default function StepCard({ step }: { step: StepRow }) {
 
           {hasOutput && (
             <Section label="Output">
-              <pre className="max-h-64 overflow-auto rounded border border-border bg-background/60 p-2 font-mono text-[11px] text-foreground/80">
+              <pre className="max-h-64 overflow-auto rounded border border-border bg-background/60 p-2 font-mono text-xs text-foreground/80">
                 {pretty(step.output)}
               </pre>
             </Section>
@@ -206,7 +209,7 @@ export default function StepCard({ step }: { step: StepRow }) {
           )}
 
           {hasProvenance && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2 font-mono text-[10px] text-muted">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2 font-mono text-xs text-muted">
               <span className="text-foreground/70">
                 {step.provider_used}:{step.model}
               </span>
@@ -216,8 +219,12 @@ export default function StepCard({ step }: { step: StepRow }) {
                   {step.tokens_out.toLocaleString("en-US")} tok
                 </span>
               )}
-              {step.latency_ms !== null && <span>{(step.latency_ms / 1000).toFixed(1)}s</span>}
-              {step.input_hash && <span>hash {shortHash(step.input_hash)}</span>}
+              {step.latency_ms !== null && (
+                <span>{(step.latency_ms / 1000).toFixed(1)}s</span>
+              )}
+              {step.input_hash && (
+                <span>hash {shortHash(step.input_hash)}</span>
+              )}
             </div>
           )}
         </div>

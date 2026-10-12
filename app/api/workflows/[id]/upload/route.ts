@@ -1,6 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { requireWorkflowAccess, jsonError } from "@/lib/api/guard";
-import { writeAudit, sha256Bytes } from "@/lib/audit";
+import { parseFile } from "@/lib/csv/parser";
+import { clearWorkflowFiles } from "@/lib/harness/inputs";
+import { sha256Bytes } from "@/lib/audit";
 import {
   FILE_TYPES,
   isPipelineType,
@@ -99,6 +101,10 @@ export async function POST(
 
   // 5. Validate extension.
   const filename = file.name;
+  if (!filename || filename.length > 200 || /[\/\\\x00-\x1f]/.test(filename) || filename === "." || filename === "..") {
+    return jsonError("Use a filename without path separators or control characters", 400);
+  }
+  if (file.size > MAX_BYTES) return jsonError("File exceeds 10 MB limit", 413);
   const ext = extensionOf(filename);
   if (!(ALLOWED_EXTENSIONS as readonly string[]).includes(ext)) {
     return jsonError("Unsupported file extension (allowed: .csv, .xlsx, .xls)", 400);
@@ -113,9 +119,21 @@ export async function POST(
     return jsonError("File exceeds 10 MB limit", 400);
   }
   const sha256 = sha256Bytes(buffer);
+  // Validate before persisting or calling a model. A partial ledger is not a clean ledger.
+  let rowCount: number;
+  try {
+    const parsed = parseFile(buffer, fileType, { filename });
+    if (!parsed.rows.length) return jsonError("No usable rows found. Check the file headers and data.", 422);
+    if (parsed.errors.length) {
+      return jsonError(`${parsed.errors.length} invalid row(s). First issue at row ${parsed.errors[0].row}: ${parsed.errors[0].message}. Correct the file and upload it again.`, 422);
+    }
+    rowCount = parsed.rows.length;
+  } catch (error) {
+    return jsonError(error instanceof Error ? error.message : "File could not be parsed", 422);
+  }
 
   // 7. Upload to Storage (upsert) at the D5 path convention.
-  const storagePath = `${workflow.org_id}/${workflow.id}/${fileType}/${filename}`;
+  const storagePath = `${workflow.org_id}/${workflow.id}/${fileType}/${sha256}${ext}`;
   const { error: uploadError } = await admin.storage
     .from(BUCKET)
     .upload(storagePath, buffer, {
@@ -126,40 +144,16 @@ export async function POST(
     return jsonError(`Storage upload failed: ${uploadError.message}`, 500);
   }
 
-  // 8. Replace any prior row of the same file_type (delete-then-insert).
-  const { error: deleteError } = await admin
-    .from("workflow_files")
-    .delete()
-    .eq("workflow_id", workflow.id)
-    .eq("file_type", fileType);
-  if (deleteError) {
-    return jsonError(`Failed to replace prior file: ${deleteError.message}`, 500);
-  }
-
-  const { data: inserted, error: insertError } = await admin
-    .from("workflow_files")
-    .insert({
-      workflow_id: workflow.id,
-      file_type: fileType,
-      storage_path: storagePath,
-      filename,
-      size_bytes: buffer.byteLength,
-      sha256,
-    })
-    .select("*")
-    .single<WorkflowFile>();
-  if (insertError || !inserted) {
-    return jsonError("Failed to record uploaded file", 500);
-  }
-
-  // 9. Audit.
-  await writeAudit(admin, {
-    workflowId: workflow.id,
-    actorType: "human",
-    actorId: profile.id,
-    action: "file_uploaded",
-    detail: { filename, size: buffer.byteLength, sha256 },
+  // The database commits replacement and its audit entry atomically under a workflow lock.
+  const { data, error: recordError } = await admin.rpc("replace_workflow_file", {
+    p_workflow_id: workflow.id, p_org_id: workflow.org_id, p_actor_id: profile.id,
+    p_file_type: fileType, p_storage_path: storagePath, p_filename: filename,
+    p_size_bytes: buffer.byteLength, p_sha256: sha256,
   });
+  if (recordError) return jsonError(recordError.code === "55000" ? "Workflow has started and no longer accepts uploads" : "Could not save the upload. Check database migrations and try again.", recordError.code === "55000" ? 409 : 500);
+  const inserted = (Array.isArray(data) ? data[0] : data) as WorkflowFile | null;
+  if (!inserted) return jsonError("Upload was not recorded", 500);
+  clearWorkflowFiles(workflow.id);
 
-  return NextResponse.json({ fileId: inserted.id, sha256 }, { status: 200 });
+  return NextResponse.json({ fileId: inserted.id, sha256, rowCount }, { status: 200 });
 }

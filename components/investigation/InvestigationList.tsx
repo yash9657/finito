@@ -1,190 +1,162 @@
 "use client";
-
-/**
- * The investigations index (Plan 5 §9): ask a question, and see the ones already asked.
- *
- * The cost note under the input is D-G8's "before it runs" half. It states a CEILING rather than
- * an estimate, because an estimate implies a precision nobody has — how many turns a question
- * takes is the thing being discovered. A bound the user can act on ("this will not exceed N
- * turns") is more useful than a guess they cannot.
- */
-
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { AlertTriangle, Loader2, Search, Sparkles } from "lucide-react";
+import { ArrowRight, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
+import { QuestionComposer } from "@/components/investigation/QuestionComposer";
 import type { Investigation } from "@/lib/types";
-
 const EXAMPLES = [
-  "Why doesn't the bank account tie out this month?",
-  "What changed in spend between the last two periods?",
-  "Find anything unusual in the AP data.",
+  "Explore the files and explain their structure and any data-quality issues.",
+  "Compare the periods in my workbook and trace the largest changes to source rows.",
+  "Which invoices need attention, and what evidence supports each exception?",
 ];
-
 export function InvestigationList() {
-  const router = useRouter();
   const [question, setQuestion] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [investigations, setInvestigations] = useState<Investigation[] | null>(null);
-
+  const [items, setItems] = useState<Investigation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
       const res = await fetch("/api/investigations", { cache: "no-store" });
-      if (!res.ok) throw new Error(`Failed to load (${res.status})`);
-      const body = (await res.json()) as { investigations: Investigation[] };
-      setInvestigations(body.investigations);
-    } catch {
-      setInvestigations([]);
+      const body = await res.json();
+      if (!res.ok)
+        throw new Error(body.error ?? "Conversations could not be loaded.");
+      const seen = new Set<string>();
+      setItems(
+        body.investigations.filter((i: Investigation) => {
+          const key = i.conversation_id ?? i.workflow_id;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }),
+      );
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Conversations could not be loaded.",
+      );
+    } finally {
+      setLoading(false);
     }
   }, []);
-
   useEffect(() => {
     void load();
   }, [load]);
-
-  async function submit() {
-    const trimmed = question.trim();
-    if (trimmed.length < 8) {
-      setError("Ask a question of at least 8 characters.");
-      return;
-    }
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/investigations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed }),
-      });
-      const body = (await res.json()) as { id?: string; error?: string };
-      if (!res.ok || !body.id) {
-        // A provider that cannot call tools is refused here, before any row exists (D-G16), so
-        // the message names the model and points at Settings rather than being a generic 500.
-        setError(body.error ?? "Could not start the investigation.");
-        return;
-      }
-      router.push(`/investigations/${body.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start the investigation.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   return (
-    <div className="mx-auto max-w-3xl space-y-8 p-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-xl font-semibold">
-          <Sparkles className="h-5 w-5 text-accent" />
-          Investigate
-        </h1>
-        <p className="mt-1 text-sm text-muted">
-          Ask an open-ended question about your financial data. The agent decides what to look at,
-          cites the rows it used, and recomputes every figure in code.
+    <div className="page-container space-y-9">
+      <header>
+        <h1 className="page-title">Ask your data</h1>
+        <p className="page-description">
+          A question can take more than one step. Follow the evidence together.
         </p>
-      </div>
-
-      <Card>
-        <CardContent className="space-y-3 py-4">
-          <Textarea
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Why doesn't the bank account tie out this month?"
-            rows={3}
-            className="resize-none"
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
-            }}
-          />
-
-          <div className="flex flex-wrap gap-1.5">
+      </header>
+      <div className="investigation-start">
+        <section className="min-w-0">
+          <QuestionComposer initialQuestion={question} />
+        </section>
+        <aside className="min-w-0">
+          <h2 className="mb-3 text-base font-medium">A place to start</h2>
+          <div className="divide-y divide-border border-y border-border">
             {EXAMPLES.map((example) => (
               <button
                 key={example}
-                type="button"
+                className="flex w-full items-start gap-3 py-4 text-left text-sm leading-relaxed text-muted hover:text-foreground"
                 onClick={() => setQuestion(example)}
-                className="rounded-full border border-border px-2.5 py-1 text-xs text-muted transition-colors hover:bg-border hover:text-foreground"
               >
                 {example}
+                <ArrowRight size={16} className="mt-1 shrink-0" />
               </button>
             ))}
           </div>
-
-          {error && (
-            <p className="flex items-start gap-2 rounded-md bg-error/10 px-3 py-2 text-xs text-error">
-              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              {error}
-            </p>
-          )}
-
-          <div className="flex items-center gap-3">
-            <Button onClick={() => void submit()} disabled={submitting}>
-              {submitting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Starting…
-                </>
-              ) : (
-                <>
-                  <Search className="mr-2 h-4 w-4" />
-                  Investigate
-                </>
-              )}
-            </Button>
-            {/* D-G8: a ceiling, not an estimate. */}
-            <p className="text-xs text-muted">
-              Bounded to at most 20 turns and 5 minutes. The agent can recommend actions, but
-              cannot make changes — anything consequential goes to the approval panel.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div>
-        <h2 className="mb-3 text-sm font-medium">Recent</h2>
-        {investigations === null && <Skeleton className="h-20 w-full" />}
-        {investigations?.length === 0 && (
-          <p className="text-sm text-muted">No investigations yet.</p>
+          <p className="mt-5 text-sm leading-relaxed text-muted">
+            New export format? Add it in{" "}
+            <Link className="text-accent underline" href="/data">
+              Your data
+            </Link>
+            . The agent can inspect sheets and columns before choosing an
+            analysis.
+          </p>
+        </aside>
+      </div>
+      <section>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-medium">Recent conversations</h2>
+          <Link
+            href="/settings/memory"
+            className="ml-auto mr-3 inline-flex min-h-11 items-center text-sm text-accent"
+          >
+            Memory &amp; history
+          </Link>
+          <Button
+            variant="ghost"
+            aria-label="Refresh conversations"
+            onClick={() => void load()}
+            disabled={loading}
+          >
+            <RefreshCw size={16} />
+          </Button>
+        </div>
+        {loading && (
+          <p role="status" className="py-6 text-sm text-muted">
+            Loading conversations…
+          </p>
         )}
-        <div className="space-y-2">
-          {(investigations ?? []).map((investigation) => (
+        {error && (
+          <p role="alert" className="py-5 text-sm text-error">
+            {error}
+          </p>
+        )}
+        {!loading && !error && !items.length && (
+          <p className="border-t border-border py-8 text-sm text-muted">
+            Your first question starts a conversation here. You can return to
+            its sources, calculations, and follow-ups.
+          </p>
+        )}
+        <div className="divide-y divide-border border-y border-border">
+          {items.map((item) => (
             <Link
-              key={investigation.workflow_id}
-              href={`/investigations/${investigation.workflow_id}`}
-              className="block rounded-lg border border-border bg-card px-4 py-3 transition-colors hover:border-accent/50"
+              key={item.workflow_id}
+              href={`/investigations/${item.workflow_id}`}
+              className="flex flex-col justify-between gap-3 px-1 py-5 transition-colors hover:bg-card sm:flex-row sm:items-center"
             >
-              <div className="flex items-start gap-3">
-                <span className="min-w-0 flex-1 text-sm">{investigation.question}</span>
-                <StatusBadge investigation={investigation} />
+              <div className="min-w-0">
+                <p className="break-words text-sm font-medium">
+                  {item.question}
+                </p>
+                <p className="mt-2 text-xs text-muted">
+                  {new Date(item.created_at).toLocaleString()} ·{" "}
+                  {item.turns_used} analysis steps
+                </p>
               </div>
-              <div className="mt-1.5 flex gap-3 font-mono text-[10px] text-muted">
-                <span>{new Date(investigation.created_at).toLocaleString()}</span>
-                <span>{investigation.turns_used} turns</span>
-                <span>
-                  {(investigation.tokens_in + investigation.tokens_out).toLocaleString()} tokens
-                </span>
-              </div>
+              <Badge
+                variant={
+                  item.status === "running"
+                    ? "running"
+                    : item.status === "answered"
+                      ? "accent"
+                      : item.status === "failed"
+                        ? "error"
+                        : "warning"
+                }
+                className="w-fit shrink-0"
+              >
+                {item.status === "running"
+                  ? "Working"
+                  : item.status === "answered"
+                    ? "Answered"
+                    : item.status === "failed"
+                      ? "Needs attention"
+                      : "Partial answer"}
+              </Badge>
             </Link>
           ))}
         </div>
-      </div>
+        <p className="mt-3 text-xs text-muted">
+          Conversations represented in the latest 50 questions.
+        </p>
+      </section>
     </div>
-  );
-}
-
-function StatusBadge({ investigation }: { investigation: Investigation }) {
-  if (investigation.status === "running") return <Badge variant="running">Running</Badge>;
-  if (investigation.status === "answered") return <Badge variant="accent">Answered</Badge>;
-  if (investigation.status === "failed") return <Badge variant="error">Failed</Badge>;
-  return (
-    <Badge variant="warning">
-      {investigation.termination_reason?.replace(/_/g, " ") ?? "Stopped"}
-    </Badge>
   );
 }

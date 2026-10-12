@@ -1,20 +1,15 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { requireWorkflowAccess } from "@/lib/api/guard";
-import { writeAudit } from "@/lib/audit";
 import { listActions } from "@/lib/approvals/service";
 import type { ReviewDecision, WorkflowStep } from "@/lib/types";
-
-// A step stuck in `running` beyond this is treated as crashed (D2).
-const STALE_STEP_MS = 3 * 60 * 1000;
-const STALE_MESSAGE = "Step timed out (running > 3 minutes)";
 
 /**
  * GET /api/workflows/[id]/status — the 2-second polling target (D1).
  *
- * Before responding it performs the stale-step check (D2): any step still
- * `running` with `started_at` older than 3 minutes is treated as crashed and,
- * together with the workflow, flipped to `error` via the admin client.
+ * Observational only. Elapsed time is not proof of worker death: a slow model can still
+ * complete after three minutes. Recovery must be performed by a leased worker/watchdog,
+ * not a browser poll that can overwrite a concurrent successful completion.
  */
 export async function GET(
   _req: NextRequest,
@@ -25,7 +20,7 @@ export async function GET(
   const g = await requireWorkflowAccess(id);
   if (!g.ok) return g.response;
   const { admin } = g;
-  let workflow = g.workflow;
+  const workflow = g.workflow;
 
   // Load steps ordered by step_number.
   const { data: stepsData, error: stepsError } = await admin
@@ -36,68 +31,21 @@ export async function GET(
 
   if (stepsError) {
     return NextResponse.json(
-      { error: `Failed to load steps: ${stepsError.message}` },
+      { error: "Failed to load workflow steps. Retry shortly." },
       { status: 500 },
     );
   }
 
-  let steps = (stepsData ?? []) as WorkflowStep[];
-
-  // Stale-step check (D2): flip crashed step(s) + the workflow to `error`.
-  const now = Date.now();
-  const stale = steps.filter(
-    (s) =>
-      s.status === "running" &&
-      s.started_at !== null &&
-      now - new Date(s.started_at).getTime() > STALE_STEP_MS,
-  );
-
-  if (stale.length > 0) {
-    const completedAt = new Date().toISOString();
-
-    for (const step of stale) {
-      await admin
-        .from("workflow_steps")
-        .update({
-          status: "error",
-          error_message: STALE_MESSAGE,
-          completed_at: completedAt,
-        })
-        .eq("id", step.id);
-
-      await writeAudit(admin, {
-        workflowId: id,
-        stepId: step.id,
-        actorType: "system",
-        actorId: "system",
-        action: "step_failed",
-        detail: { reason: STALE_MESSAGE, step_number: step.step_number },
-      });
-    }
-
-    await admin
-      .from("workflows")
-      .update({ status: "error", error_message: STALE_MESSAGE })
-      .eq("id", id);
-
-    // Reflect the flips in the response without a full reload.
-    const staleIds = new Set(stale.map((s) => s.id));
-    steps = steps.map((s) =>
-      staleIds.has(s.id)
-        ? {
-            ...s,
-            status: "error",
-            error_message: STALE_MESSAGE,
-            completed_at: completedAt,
-          }
-        : s,
-    );
-    workflow = { ...workflow, status: "error", error_message: STALE_MESSAGE };
-  }
+  const steps = (stepsData ?? []) as WorkflowStep[];
 
   // Consequential actions proposed by this run (Plan 3, D-A12) — the approval panel's
   // data source, so a suspended run needs no extra endpoint.
-  const actions = await listActions(admin, id);
+  let actions: Awaited<ReturnType<typeof listActions>>;
+  try {
+    actions = await listActions(admin, id);
+  } catch {
+    return NextResponse.json({ error: "Failed to load approval requests. Retry shortly." }, { status: 503 });
+  }
 
   // Latest review decision (null if none yet).
   const { data: reviewData, error: reviewError } = await admin
@@ -110,12 +58,13 @@ export async function GET(
 
   if (reviewError) {
     return NextResponse.json(
-      { error: `Failed to load review: ${reviewError.message}` },
+      { error: "Failed to load workflow review. Retry shortly." },
       { status: 500 },
     );
   }
 
   return NextResponse.json({
+    viewer: { canReview: g.profile.role === "admin" || g.profile.role === "reviewer" },
     workflow: {
       id: workflow.id,
       name: workflow.name,

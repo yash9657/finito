@@ -38,8 +38,8 @@ function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
 }
 
 describe("the registry (D-G20)", () => {
-  it("gives the investigator seven tools and every other role none", () => {
-    expect(toolDefinitionsForRole("investigator")).toHaveLength(7);
+  it("gives the investigator sixteen tools and every other role none", () => {
+    expect(toolDefinitionsForRole("investigator")).toHaveLength(16);
     for (const role of ["parser", "matcher", "classifier", "writer"] as const) {
       expect(ROLE_TOOLS[role]).toEqual([]);
       expect(toolDefinitionsForRole(role)).toEqual([]);
@@ -115,13 +115,34 @@ describe("query_ledger — the compact action", () => {
 
   it("computes totals over ALL matching rows even when the sample is truncated", async () => {
     // The failure this prevents: an agent shown 25 of 247 rows computing a total from 25.
-    const all = await queryLedger.run({}, ctx());
+    const template = datasets.rows.find(row => row.dataset === "erp_export")!;
+    const rows = Array.from({ length: 80 }, (_, index) => ({ ...template, sourceId: `${template.sourceId}-${index}`, amountCents: 100 }));
+    const all = await queryLedger.run({ datasets: ["erp_export"] }, ctx({ rows }));
     const data = all.data as { totalCents: number; sampleRows: unknown[] };
-    const expected = datasets.rows.reduce((s, r) => s + r.amountCents, 0);
-    expect(data.totalCents).toBe(expected);
-    expect(data.sampleRows.length).toBeLessThan(datasets.rows.length);
+    expect(data.totalCents).toBe(8000);
+    expect(data.sampleRows.length).toBeLessThan(rows.length);
     expect(all.truncated).toBe(true);
     expect(all.hint).toContain("computed over ALL matching rows");
+  });
+
+  it("refuses to sum budget, actuals, ERP and bank into a fictitious financial total", async () => {
+    const result = await queryLedger.run({}, ctx());
+    expect(result.ok).toBe(false);
+    expect(result.data).toBeUndefined();
+    expect(result.hint).toContain("datasets");
+    const explicitMix = await queryLedger.run({ datasets: ["budget", "actuals"] }, ctx());
+    expect(explicitMix.ok).toBe(false);
+  });
+
+  it("requires a source selection when the same dataset exists in overlapping uploads", async () => {
+    const original = datasets.rows.filter(row => row.dataset === "erp_export");
+    const rows = [...original, { ...original[0], workflowId: "other-workflow", sourceId: "other-source", amountCents: 99999 }];
+    const ambiguous = await queryLedger.run({ datasets: ["erp_export"] }, ctx({ rows }));
+    expect(ambiguous.ok).toBe(false);
+    expect(ambiguous.hint).toContain("workflowId");
+    const selected = await queryLedger.run({ datasets: ["erp_export"], workflowId: FIXTURE_WORKFLOW_ID }, ctx({ rows }));
+    expect(selected.ok).toBe(true);
+    expect((selected.data as { rowCount: number }).rowCount).toBe(original.length);
   });
 
   it("returns a correctable message for a malformed date, not a throw", async () => {
@@ -194,6 +215,13 @@ describe("get_transactions — drilling in", () => {
 });
 
 describe("compare_periods — variances in code", () => {
+  it("does not turn a missing period into a zero balance", async () => {
+    const row = datasets.rows.find(row => row.dataset === "erp_export")!;
+    const result = await comparePeriods.run({ datasets: ["erp_export"], periodA: "2026-01", periodB: "2026-02" }, ctx({ rows: [{ ...row, period: "2026-01" }] }));
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("unknown, not zero");
+    expect(result.data).toBeUndefined();
+  });
   it("computes the variance between two periods", async () => {
     const periods = [...new Set(datasets.rows.map((r) => r.period).filter(Boolean))].sort();
     const result = await comparePeriods.run(
@@ -222,18 +250,24 @@ describe("compare_periods — variances in code", () => {
 
   it("returns null rather than Infinity for a percentage off a zero base", async () => {
     // An Infinity here could reach the answer as a figure.
+    const template = datasets.rows.find(row => row.dataset === "erp_export")!;
     const result = await comparePeriods.run(
-      { periodA: "2026-06", periodB: "2026-07", groupBy: "category" },
-      ctx(),
+      { datasets: ["erp_export"], periodA: "2026-06", periodB: "2026-07", groupBy: "category" },
+      ctx({ rows: [{ ...template, period: "2026-06", amountCents: 0 }, { ...template, sourceId: `${template.sourceId}-later`, period: "2026-07", amountCents: 100 }] }),
     );
     const data = result.data as { variances?: { variancePct: number | null }[] };
-    for (const v of data.variances ?? []) {
-      if (v.variancePct !== null) expect(Number.isFinite(v.variancePct)).toBe(true);
-    }
+    expect(result.ok).toBe(true);
+    expect(data.variances?.[0].variancePct).toBeNull();
   });
 });
 
 describe("find_anomalies — the existing detectors", () => {
+  it("does not match or cite rows across ambiguous uploads", async () => {
+    const rows = [...datasets.rows, { ...datasets.rows[0], workflowId: "other-workflow", sourceId: "foreign-row" }];
+    const result = await findAnomalies.run({}, ctx({ rows }));
+    expect(result.ok).toBe(false);
+    expect(result.hint).toContain("workflowId");
+  });
   it("runs the real reconciliation detectors and cites full source ids", async () => {
     const result = await findAnomalies.run({}, ctx());
     expect(result.ok).toBe(true);

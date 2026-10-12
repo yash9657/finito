@@ -4,8 +4,8 @@
  * The paper's finding is that interface design mattered more than model choice. Its four
  * principles are load-bearing here, and each shows up as a field or a rule:
  *
- *   1. **Simplicity.** Seven tools. The registry is a closed list and adding an eighth should
- *      feel expensive.
+ *   1. **Simplicity.** The registry is a closed list. General source inspection and isolated
+ *      analysis extend it without creating a new hardcoded tool for every unfamiliar schema.
  *   2. **Compact actions.** `query_ledger` filters, groups and aggregates in one call, so the
  *      agent makes real progress per turn instead of assembling a join over five.
  *   3. **Informative feedback.** Every result carries `summary` (one line the agent can reason
@@ -20,6 +20,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PlainJsonSchema } from "@/lib/llm/json-schema";
 import type { LedgerRow, OrgDatasets } from "@/lib/harness/agent/datasets";
 import type { ProposedAction, WorkflowRowType } from "@/lib/types";
+import type { InvestigationAnalysis } from "@/lib/types";
+import type { DataSource } from "@/lib/data/types";
 
 /**
  * What every tool returns.
@@ -50,6 +52,18 @@ export interface ToolContext {
   datasets: OrgDatasets;
   /** Convenience view of `datasets.rows`. */
   rows: LedgerRow[];
+  /** General uploaded documents and tables, tenant-scoped and SHA-verified at load. */
+  dataSources?: DataSource[];
+  analyses?: InvestigationAnalysis[];
+  signal?: AbortSignal;
+  /** Trusted request identity and current human-authored message, never model arguments. */
+  userId?: string;
+  currentQuestion?: string;
+  memoryEnabled?: boolean;
+  /** Only discovered historical sources can be activated; ids are not a browsing capability. */
+  discoveredSourceIds?: Set<string>;
+  discoveredWorkflowIds?: Set<string>;
+  activatedWorkflowIds?: Set<string>;
   /**
    * The turn this call belongs to.
    *
@@ -92,11 +106,10 @@ export function empty(summary: string, hint: string): ToolResultEnvelope {
 /** Cents → a readable amount for `summary` lines. Display only; never used in arithmetic. */
 export function formatCents(cents: number): string {
   const sign = cents < 0 ? "-" : "";
-  const abs = Math.abs(cents);
-  return `${sign}$${(abs / 100).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+  const abs = BigInt(Math.abs(cents));
+  const whole = (abs / BigInt(100)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const fraction = (abs % BigInt(100)).toString().padStart(2, "0");
+  return `${sign}$${whole}.${fraction}`;
 }
 
 /**

@@ -12,18 +12,18 @@ type Size = "default" | "sm" | "lg" | "icon";
 
 const variants: Record<Variant, string> = {
   default: "border border-border bg-card text-foreground hover:bg-border",
-  accent: "bg-accent text-background hover:opacity-90",
+  accent: "bg-accent text-on-accent hover:opacity-90",
   outline: "border border-border bg-transparent text-foreground hover:bg-card",
   ghost: "bg-transparent text-foreground hover:bg-card",
-  warning: "bg-warning text-background hover:opacity-90",
-  destructive: "bg-error text-background hover:opacity-90",
+  warning: "bg-warning text-on-accent hover:opacity-90",
+  destructive: "bg-error text-on-accent hover:opacity-90",
 };
 
 const sizes: Record<Size, string> = {
-  default: "h-9 px-4 py-2",
-  sm: "h-8 px-3 text-sm",
-  lg: "h-10 px-6",
-  icon: "h-9 w-9",
+  default: "min-h-11 px-4 py-2",
+  sm: "min-h-9 px-3 text-sm",
+  lg: "min-h-12 px-6",
+  icon: "h-11 w-11",
 };
 
 export interface ButtonProps

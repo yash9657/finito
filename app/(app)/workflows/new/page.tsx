@@ -10,7 +10,6 @@ import {
   ArrowRight,
   ArrowLeft,
   Loader2,
-  Rocket,
   FileText,
   type LucideIcon,
 } from "lucide-react";
@@ -44,9 +43,14 @@ const TYPE_CONFIG: Record<WorkflowType, TypeConfig> = {
     type: "reconciliation",
     title: "Reconciliation",
     icon: Scale,
-    blurb: "Match your ERP ledger against the bank statement and flag exceptions.",
+    blurb:
+      "Match your ERP ledger against the bank statement and flag exceptions.",
     files: [
-      { fileType: "erp_export", label: "ERP Export", demoFilename: "erp_export_demo.csv" },
+      {
+        fileType: "erp_export",
+        label: "ERP Export",
+        demoFilename: "erp_export_demo.csv",
+      },
       {
         fileType: "bank_statement",
         label: "Bank Statement",
@@ -56,22 +60,35 @@ const TYPE_CONFIG: Record<WorkflowType, TypeConfig> = {
   },
   ap_matching: {
     type: "ap_matching",
-    title: "AP Matching",
+    title: "Invoice matching",
     icon: Receipt,
     blurb: "Match invoices to purchase orders and build the approval queue.",
     files: [
-      { fileType: "po", label: "Purchase Orders", demoFilename: "purchase_orders_demo.csv" },
-      { fileType: "invoice", label: "Invoices", demoFilename: "invoices_demo.csv" },
+      {
+        fileType: "po",
+        label: "Purchase Orders",
+        demoFilename: "purchase_orders_demo.csv",
+      },
+      {
+        fileType: "invoice",
+        label: "Invoices",
+        demoFilename: "invoices_demo.csv",
+      },
     ],
   },
   fpa_commentary: {
     type: "fpa_commentary",
-    title: "FP&A Commentary",
+    title: "Variance analysis",
     icon: TrendingUp,
-    blurb: "Compute budget-vs-actual variances and draft board-ready commentary.",
+    blurb:
+      "Calculate budget-versus-actual differences and prepare commentary for review.",
     files: [
       { fileType: "budget", label: "Budget", demoFilename: "budget_demo.csv" },
-      { fileType: "actuals", label: "Actuals", demoFilename: "actuals_demo.csv" },
+      {
+        fileType: "actuals",
+        label: "Actuals",
+        demoFilename: "actuals_demo.csv",
+      },
     ],
   },
 };
@@ -100,7 +117,9 @@ export default function NewWorkflowPage() {
     isWorkflowType(preselected) ? preselected : "reconciliation",
   );
   const [workflowId, setWorkflowId] = React.useState<string | null>(null);
-  const [uploaded, setUploaded] = React.useState<Partial<Record<FileType, UploadedInfo>>>({});
+  const [uploaded, setUploaded] = React.useState<
+    Partial<Record<FileType, UploadedInfo>>
+  >({});
 
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -113,6 +132,7 @@ export default function NewWorkflowPage() {
 
   /* --- Stage 1 → 2: create the workflow row so uploads have an id (§11.4). --- */
   async function enterUploads() {
+    if (busy) return;
     setError(null);
     setBusy(true);
     try {
@@ -122,7 +142,9 @@ export default function NewWorkflowPage() {
         body: JSON.stringify({ type: selectedType }),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         throw new Error(body?.error ?? "Failed to create workflow");
       }
       const { id } = (await res.json()) as { id: string };
@@ -138,14 +160,18 @@ export default function NewWorkflowPage() {
 
   /* --- Stage 3: launch the run, then jump to the live view (§11.4). --- */
   async function launch() {
-    if (!workflowId) return;
+    if (!workflowId || busy) return;
     setNeedsProvider(false);
     setError(null);
     setBusy(true);
     try {
-      const res = await fetch(`/api/workflows/${workflowId}/run`, { method: "POST" });
+      const res = await fetch(`/api/workflows/${workflowId}/run`, {
+        method: "POST",
+      });
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         const message = body?.error ?? "Failed to launch workflow";
         // The run route returns 400 with this message when no provider resolves (D-P4).
         if (res.status === 400 && /provider configured/i.test(message)) {
@@ -163,9 +189,9 @@ export default function NewWorkflowPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-6 py-10">
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-6 py-10">
       <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight">New workflow</h1>
+        <h1 className="text-3xl font-semibold tracking-tight">New workflow</h1>
         <StageIndicator stage={stage} />
       </div>
 
@@ -180,7 +206,7 @@ export default function NewWorkflowPage() {
       {/* ---------------------------------------------------------------- */}
       {stage === 1 && (
         <div className="flex flex-col gap-6">
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-3">
             {WORKFLOW_TYPES.map((t) => {
               const c = TYPE_CONFIG[t];
               const Icon = c.icon;
@@ -191,26 +217,31 @@ export default function NewWorkflowPage() {
                   type="button"
                   onClick={() => setSelectedType(t)}
                   className={cn(
-                    "flex flex-col gap-3 rounded-lg border bg-card p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+                    "grid gap-4 rounded-lg border bg-card p-6 sm:grid-cols-[44px_1fr_180px] text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
                     active
-                      ? "border-accent ring-1 ring-accent"
+                      ? "border-accent bg-accent/[0.04]"
                       : "border-border hover:border-muted",
                   )}
                   aria-pressed={active}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-start justify-between">
                     <Icon
-                      className={cn("h-6 w-6", active ? "text-accent" : "text-muted")}
+                      className={cn(
+                        "h-6 w-6",
+                        active ? "text-accent" : "text-muted",
+                      )}
                       strokeWidth={1.75}
                     />
                     {active && <Check className="h-4 w-4 text-accent" />}
                   </div>
                   <div className="flex flex-col gap-1">
                     <span className="font-medium">{c.title}</span>
-                    <span className="text-xs leading-relaxed text-muted">{c.blurb}</span>
+                    <span className="text-sm leading-relaxed text-muted">
+                      {c.blurb}
+                    </span>
                   </div>
-                  <div className="mt-1 flex flex-col gap-1 border-t border-border pt-3">
-                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted">
+                  <div className="flex flex-col gap-1 border-t border-border pt-3 sm:border-t-0 sm:border-l sm:pl-5 sm:pt-0">
+                    <span className="text-xs font-medium text-muted">
                       Required files
                     </span>
                     {c.files.map((f) => (
@@ -248,17 +279,11 @@ export default function NewWorkflowPage() {
       {/* ---------------------------------------------------------------- */}
       {stage === 2 && workflowId && (
         <div className="flex flex-col gap-6">
-          <div className="rounded-md border border-border bg-card/50 px-4 py-3 text-xs text-muted">
-            No files handy? Drop the demo CSVs from{" "}
-            <span className="font-mono text-foreground/80">demo-data/</span> —{" "}
-            {config.files.map((f, i) => (
-              <React.Fragment key={f.fileType}>
-                {i > 0 && ", "}
-                <span className="font-mono text-foreground/80">{f.demoFilename}</span>
-              </React.Fragment>
-            ))}
-            .
-          </div>
+          <p className="rounded-md border border-border bg-card px-4 py-3 text-sm leading-relaxed text-muted">
+            Use exports for the same entity, currency, and period. FinFlow
+            validates the file structure before processing; review source totals
+            before approving a result.
+          </p>
 
           <div className="grid gap-4">
             {config.files.map((f) => (
@@ -269,7 +294,10 @@ export default function NewWorkflowPage() {
                   label={f.label}
                   workflowId={workflowId}
                   onUploaded={(info?: UploadedInfo) =>
-                    setUploaded((prev) => ({ ...prev, [f.fileType]: info ?? {} }))
+                    setUploaded((prev) => ({
+                      ...prev,
+                      [f.fileType]: info ?? {},
+                    }))
                   }
                 />
               </div>
@@ -281,7 +309,11 @@ export default function NewWorkflowPage() {
               <ArrowLeft className="h-4 w-4" />
               Back
             </Button>
-            <Button variant="accent" onClick={() => setStage(3)} disabled={!allUploaded}>
+            <Button
+              variant="accent"
+              onClick={() => setStage(3)}
+              disabled={!allUploaded}
+            >
               Continue
               <ArrowRight className="h-4 w-4" />
             </Button>
@@ -346,8 +378,8 @@ export default function NewWorkflowPage() {
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <>
-                  <Rocket className="h-4 w-4" />
-                  Launch workflow
+                  <ArrowRight className="h-4 w-4" />
+                  Run workflow
                 </>
               )}
             </Button>
@@ -365,12 +397,12 @@ export default function NewWorkflowPage() {
 const STAGE_LABELS: Record<Stage, string> = {
   1: "Choose type",
   2: "Upload files",
-  3: "Confirm & launch",
+  3: "Review & run",
 };
 
 function StageIndicator({ stage }: { stage: Stage }) {
   return (
-    <div className="flex items-center gap-2 text-sm">
+    <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm">
       {([1, 2, 3] as Stage[]).map((s, i) => {
         const done = s < stage;
         const active = s === stage;
@@ -380,12 +412,16 @@ function StageIndicator({ stage }: { stage: Stage }) {
             <span
               className={cn(
                 "flex items-center gap-1.5",
-                active ? "text-foreground" : done ? "text-accent" : "text-muted",
+                active
+                  ? "text-foreground"
+                  : done
+                    ? "text-accent"
+                    : "text-muted",
               )}
             >
               <span
                 className={cn(
-                  "flex h-5 w-5 items-center justify-center rounded-full border text-[11px] font-medium",
+                  "flex h-5 w-5 items-center justify-center rounded-full border text-xs font-medium",
                   active
                     ? "border-accent text-accent"
                     : done

@@ -10,9 +10,10 @@ import { getProvider } from "@/lib/llm/providers";
 import type { ProviderId, TestConnectionResult } from "@/lib/llm/provider";
 import { validateBaseUrl } from "@/lib/llm/url-guard";
 import { providerIdEnum } from "@/lib/types";
+import { FIREWORKS_BASE_URL } from "@/lib/llm/fireworks-config";
 
 /** Providers that require an API key (ollama/custom may be keyless). */
-const KEYED_PROVIDERS: ReadonlySet<ProviderId> = new Set(["anthropic", "openai", "google"]);
+const KEYED_PROVIDERS: ReadonlySet<ProviderId> = new Set(["fireworks", "anthropic", "openai", "google"]);
 /** Providers that require a base_url reachable from the server (D-P13). */
 const BASE_URL_PROVIDERS: ReadonlySet<ProviderId> = new Set(["ollama", "custom"]);
 
@@ -36,6 +37,9 @@ export function validateConfigInput(
   opts: { requireKey: boolean } = { requireKey: true },
 ): string | null {
   const provider = input.provider;
+  if (provider === "fireworks" && input.base_url?.trim() && input.base_url.trim().replace(/\/+$/, "") !== FIREWORKS_BASE_URL) {
+    return "Fireworks AI uses its standard hosted endpoint. Select Custom for another endpoint.";
+  }
 
   if (BASE_URL_PROVIDERS.has(provider)) {
     if (!input.base_url || input.base_url.trim().length === 0) {

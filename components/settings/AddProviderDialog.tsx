@@ -11,6 +11,7 @@
 
 import * as React from "react";
 import { Loader2, Check, X } from "lucide-react";
+import { FIREWORKS_MODEL_OPTIONS } from "@/lib/llm/fireworks-config";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,12 +21,15 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { PROVIDER_META, PROVIDER_ORDER } from "@/components/settings/providerMeta";
+import {
+  PROVIDER_META,
+  PROVIDER_ORDER,
+} from "@/components/settings/providerMeta";
 import { cn } from "@/lib/utils";
 import type { OrgModelConfigPublic, ProviderIdValue } from "@/lib/types";
 
 const INPUT =
-  "w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+  "min-h-11 w-full rounded-md border border-border bg-transparent px-3 py-2 text-base text-foreground sm:text-sm placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 type TestState =
   | { kind: "idle" }
@@ -40,18 +44,34 @@ interface Props {
   onSaved: () => void;
 }
 
-export default function AddProviderDialog({ open, onOpenChange, editing, onSaved }: Props) {
-  const [provider, setProvider] = React.useState<ProviderIdValue>("anthropic");
+export default function AddProviderDialog({
+  open,
+  onOpenChange,
+  editing,
+  onSaved,
+}: Props) {
+  const [provider, setProvider] = React.useState<ProviderIdValue>("fireworks");
   const [displayName, setDisplayName] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
   const [baseUrl, setBaseUrl] = React.useState("");
-  const [defaultModel, setDefaultModel] = React.useState(PROVIDER_META.anthropic.defaultModel);
+  const [defaultModel, setDefaultModel] = React.useState(
+    PROVIDER_META.fireworks.defaultModel,
+  );
   const [isDefault, setIsDefault] = React.useState(false);
   const [test, setTest] = React.useState<TestState>({ kind: "idle" });
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const meta = PROVIDER_META[provider];
+  const canTestSaved = Boolean(
+    editing &&
+    !apiKey &&
+    baseUrl === (editing.base_url ?? "") &&
+    defaultModel === editing.default_model,
+  );
+  const needsKeyForTest = Boolean(
+    editing && meta.needsKey && !apiKey && !canTestSaved,
+  );
 
   // Reset the form whenever the dialog opens (either fresh or prefilled from `editing`).
   React.useEffect(() => {
@@ -64,11 +84,11 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
       setDefaultModel(editing.default_model);
       setIsDefault(editing.is_default);
     } else {
-      setProvider("anthropic");
+      setProvider("fireworks");
       setDisplayName("");
       setApiKey("");
       setBaseUrl("");
-      setDefaultModel(PROVIDER_META.anthropic.defaultModel);
+      setDefaultModel(PROVIDER_META.fireworks.defaultModel);
       setIsDefault(false);
     }
     setTest({ kind: "idle" });
@@ -86,23 +106,35 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
   }
 
   async function runTest() {
+    if (saving || test.kind === "testing") return;
     setTest({ kind: "testing" });
     setError(null);
     try {
-      const res = await fetch("/api/llm/configs/new/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          provider,
-          api_key: apiKey || undefined,
-          base_url: baseUrl || undefined,
-          default_model: defaultModel,
-        }),
-      });
-      const body = (await res.json().catch(() => null)) as
-        | { ok?: boolean; modelUsed?: string; error?: string }
-        | null;
-      if (res.ok && body?.ok) setTest({ kind: "ok", modelUsed: body.modelUsed });
+      const res = await fetch(
+        canTestSaved
+          ? `/api/llm/configs/${editing!.id}/test`
+          : "/api/llm/configs/new/test",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(45_000),
+          body: canTestSaved
+            ? undefined
+            : JSON.stringify({
+                provider,
+                api_key: apiKey || undefined,
+                base_url: baseUrl || undefined,
+                default_model: defaultModel,
+              }),
+        },
+      );
+      const body = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        modelUsed?: string;
+        error?: string;
+      } | null;
+      if (res.ok && body?.ok)
+        setTest({ kind: "ok", modelUsed: body.modelUsed });
       else setTest({ kind: "fail", error: body?.error });
     } catch {
       setTest({ kind: "fail", error: "Could not reach the server" });
@@ -110,6 +142,7 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
   }
 
   async function save() {
+    if (saving || test.kind === "testing") return;
     setSaving(true);
     setError(null);
     try {
@@ -122,7 +155,9 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
       if (apiKey) payload.api_key = apiKey;
       if (baseUrl) payload.base_url = baseUrl;
 
-      const url = editing ? `/api/llm/configs/${editing.id}` : "/api/llm/configs";
+      const url = editing
+        ? `/api/llm/configs/${editing.id}`
+        : "/api/llm/configs";
       const method = editing ? "PATCH" : "POST";
       const res = await fetch(url, {
         method,
@@ -130,7 +165,9 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
         body: JSON.stringify(payload),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        const body = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
         throw new Error(body?.error ?? "Failed to save provider");
       }
       onSaved();
@@ -152,23 +189,35 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
   const testPassed = test.kind === "ok";
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!saving && test.kind !== "testing") onOpenChange(next);
+      }}
+    >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{editing ? "Edit provider" : "Add provider"}</DialogTitle>
+          <DialogTitle>
+            {editing ? "Edit provider" : "Add provider"}
+          </DialogTitle>
           <DialogDescription>
-            Keys are encrypted at rest and shown never again — only the last 4 characters
-            are kept for display.
+            Your API key is encrypted when saved. Only its last four characters
+            are shown afterward.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4 py-2">
+        <fieldset
+          disabled={saving || test.kind === "testing"}
+          className="flex min-w-0 flex-col gap-4 py-2"
+        >
           <Field label="Provider">
             <select
               value={provider}
               disabled={!!editing}
-              onChange={(e) => onProviderChange(e.target.value as ProviderIdValue)}
-              className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60"
+              onChange={(e) =>
+                onProviderChange(e.target.value as ProviderIdValue)
+              }
+              className="min-h-11 w-full rounded-md border border-border bg-transparent px-3 py-2 text-base text-foreground sm:text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60"
             >
               {PROVIDER_ORDER.map((p) => (
                 <option key={p} value={p}>
@@ -185,13 +234,17 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
                 setDisplayName(e.target.value);
                 invalidate();
               }}
-              placeholder="Anthropic (prod key)"
+              placeholder="Fireworks · finance workspace"
               className={INPUT}
             />
           </Field>
 
           {(meta.needsKey || provider === "custom") && (
-            <Field label={editing ? "API key (leave blank to keep current)" : "API key"}>
+            <Field
+              label={
+                editing ? "API key (leave blank to keep current)" : "API key"
+              }
+            >
               <input
                 type="password"
                 autoComplete="off"
@@ -201,7 +254,9 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
                   setApiKey(e.target.value);
                   invalidate();
                 }}
-                placeholder={editing ? "•••• (unchanged)" : "sk-…"}
+                placeholder={
+                  editing ? "•••• (unchanged)" : "Your provider API key"
+                }
                 className={cn(INPUT, "font-mono")}
               />
             </Field>
@@ -218,8 +273,8 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
                 placeholder="http://localhost:11434"
                 className={cn(INPUT, "font-mono")}
               />
-              <p className="mt-1 text-xs text-muted">
-                Must be reachable from the FinFlow server (D-P13) — the hosted product
+              <p className="mt-1 text-sm text-muted">
+                Must be reachable from the FinFlow server. The hosted product
                 cannot reach a customer&apos;s laptop.
               </p>
             </Field>
@@ -227,6 +282,7 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
 
           <Field label="Default model">
             <input
+              list={provider === "fireworks" ? "fireworks-models" : undefined}
               value={defaultModel}
               onChange={(e) => {
                 setDefaultModel(e.target.value);
@@ -237,50 +293,100 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
             />
           </Field>
 
-          <label className="flex items-center gap-2 text-sm">
+          {provider === "fireworks" && (
+            <>
+              <datalist id="fireworks-models">
+                {FIREWORKS_MODEL_OPTIONS.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </datalist>
+              <p className="text-sm leading-5 text-muted">
+                Open-weight models hosted on Fireworks AI. Use a model ID from
+                your Fireworks account. Availability and tool support depend on
+                the selected model.
+              </p>
+            </>
+          )}
+          <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm">
             <input
               type="checkbox"
               checked={isDefault}
               onChange={(e) => setIsDefault(e.target.checked)}
-              className="h-4 w-4 accent-[var(--accent)]"
+              className="h-5 w-5 shrink-0 accent-[var(--accent)]"
             />
             Set as organization default
           </label>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" onClick={runTest} disabled={test.kind === "testing" || !canSave}>
-              {test.kind === "testing" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            <Button
+              variant="outline"
+              onClick={runTest}
+              disabled={test.kind === "testing" || !canSave || needsKeyForTest}
+            >
+              {test.kind === "testing" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : null}
               Test connection
             </Button>
             {test.kind === "ok" && (
-              <span className="flex items-center gap-1 text-xs text-accent">
+              <span
+                role="status"
+                className="flex min-w-0 items-start gap-2 break-all text-sm text-accent"
+              >
                 <Check className="h-3.5 w-3.5" /> Connected
                 {test.modelUsed ? ` (${test.modelUsed})` : ""}
               </span>
             )}
             {test.kind === "fail" && (
-              <span className="flex items-center gap-1 text-xs text-error">
+              <span
+                role="alert"
+                className="flex min-w-0 items-start gap-2 break-words text-sm text-error"
+              >
                 <X className="h-3.5 w-3.5" /> {test.error ?? "Failed"}
               </span>
             )}
           </div>
 
-          {error && <p className="font-mono text-xs text-error">{error}</p>}
-        </div>
+          {needsKeyForTest && (
+            <p className="text-sm leading-6 text-muted">
+              To test changed connection settings before saving, enter the API
+              key again. You can also save, then test the saved provider.
+            </p>
+          )}
+          {error && (
+            <p role="alert" className="text-sm text-error">
+              {error}
+            </p>
+          )}
+        </fieldset>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
+          <Button
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={saving || test.kind === "testing"}
+          >
             Cancel
           </Button>
           {testPassed ? (
-            <Button variant="accent" onClick={save} disabled={!canSave || saving}>
+            <Button
+              variant="accent"
+              onClick={save}
+              disabled={!canSave || saving}
+            >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              Save
+              Save provider
             </Button>
           ) : (
-            <Button variant="outline" onClick={save} disabled={!canSave || saving}>
+            <Button
+              variant="outline"
+              onClick={save}
+              disabled={!canSave || saving || test.kind === "testing"}
+            >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              Save anyway
+              Save without verification
             </Button>
           )}
         </DialogFooter>
@@ -289,11 +395,27 @@ export default function AddProviderDialog({ open, onOpenChange, editing, onSaved
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  const id = React.useId();
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-sm font-medium">{label}</span>
-      {children}
+      <label htmlFor={id} className="text-sm font-medium">
+        {label}
+      </label>
+      {React.Children.map(children, (child) =>
+        React.isValidElement(child) &&
+        ["input", "select", "textarea"].includes(child.type as string)
+          ? React.cloneElement(child as React.ReactElement<{ id: string }>, {
+              id,
+            })
+          : child,
+      )}
     </div>
   );
 }

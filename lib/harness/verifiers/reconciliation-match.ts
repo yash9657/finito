@@ -35,6 +35,7 @@ function epochDay(value: unknown): number | null {
   if (!match) return null;
   const ms = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
   if (Number.isNaN(ms)) return null;
+  if (new Date(ms).toISOString().slice(0, 10) !== value.trim()) return null;
   return Math.floor(ms / 86_400_000);
 }
 
@@ -65,9 +66,11 @@ export const verifyReconciliationMatch: Verifier = (action, context): Verificati
     return fail("Proposed match amounts must be integer cents");
   }
 
-  const amountDiff = Math.abs(erpAmount - bankAmount);
+  const difference = BigInt(erpAmount) - BigInt(bankAmount);
+  const amountDiff = difference < BigInt(0) ? -difference : difference;
   const tolerance = context.policy.matchAmountToleranceCents;
-  if (amountDiff > tolerance) {
+  if (!Number.isSafeInteger(tolerance) || tolerance < 0) return fail("Match amount tolerance must be non-negative integer cents");
+  if (amountDiff > BigInt(tolerance)) {
     return fail(
       `Amounts differ by ${amountDiff}c, beyond the ${tolerance}c tolerance ` +
         `(${erpId} ${erpAmount}c vs ${bankId} ${bankAmount}c)`,
@@ -82,6 +85,7 @@ export const verifyReconciliationMatch: Verifier = (action, context): Verificati
 
   const daysDiff = Math.abs(erpDay - bankDay);
   const window = context.policy.matchDateWindowDays;
+  if (!Number.isSafeInteger(window) || window < 0) return fail("Match date window must be a non-negative integer number of days");
   if (daysDiff > window) {
     return fail(
       `Dates differ by ${daysDiff} day${daysDiff === 1 ? "" : "s"}, beyond the ` +
@@ -91,6 +95,6 @@ export const verifyReconciliationMatch: Verifier = (action, context): Verificati
 
   // An exact-amount, same-day match is routine. Anything using up the tolerance is worth a
   // reviewer's attention if the run is being reviewed, so it is not "low".
-  const usesTolerance = amountDiff > 0 || daysDiff > 0;
+  const usesTolerance = amountDiff > BigInt(0) || daysDiff > 0;
   return pass(usesTolerance ? "medium" : "low");
 };
