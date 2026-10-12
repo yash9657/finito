@@ -62,7 +62,7 @@ describe("figures are computed from cited rows, not taken from the model", () =>
     if (!result.ok) expect(result.problems.join(" ")).toContain("exactly two");
   });
 
-  it.each(["€42,000", "GBP 50", "₹900", "50 CHF"])("rejects unsupported monetary literals in finding text (%s)", literal => {
+  it.each(["€42,000", "GBP 50", "₹900", "50 CHF", "$0", "USD -12.50", "1,250.00 USD", "CHF +0.01"])("rejects unsupported monetary literals in finding text (%s)", literal => {
     const result = validateAnswer(answer({ findings: [{ statement: `The unexplained amount is ${literal}`, sourceIds: [a.sourceId] }] }), rows, { partial: false });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.problems.join(" ")).toContain("monetary amounts written directly");
@@ -191,6 +191,25 @@ describe("rejections", () => {
       { partial: false },
     );
     expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    "The source basis is USD, with one entity.",
+    "Currency labels include USD, EUR, GBP and CHF.",
+    "The column says dollars, with no amount in this sentence.",
+    "Reporting currencies: CAD, AUD, SGD, NZD.",
+  ])("allows punctuation around currency labels in every narrative field (%s)", text => {
+    // Regression from a live Fireworks run: a valid computed answer was rejected
+    // twice because the monetary detector accepted a comma as the entire amount.
+    const raw = answer();
+    const result = validateAnswer({
+      ...raw, prose: `${text} The gap is {{gap}}.`,
+      findings: [{ statement: text, sourceIds: [a.sourceId] }],
+      citations: [{ sourceId: a.sourceId, note: text }],
+      figures: [{ ...raw.figures[0], label: text }],
+    }, rows, { partial: false });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.answer.figures[0].valueCents).toBe(a.amountCents + b.amountCents);
   });
 
   it("rejects a placeholder with no matching figure", () => {

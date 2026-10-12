@@ -80,7 +80,9 @@ export type AnswerValidation =
  * unusable and push the model toward writing amounts in words to evade it. Currency markers are
  * the reliable signal that a number is a figure.
  */
-const CURRENCY_LITERAL = /(?:\p{Sc}\s?[-+]?\s?[\d,]+(?:\.\d+)?)|(?:\b[\d,]+(?:\.\d+)?\s?(?:dollars|euros|pounds|yen|rupees|USD|EUR|GBP|JPY|CAD|AUD|CHF|INR|CNY|RMB|HKD|SGD|NZD)\b)|(?:\b(?:USD|EUR|GBP|JPY|CAD|AUD|CHF|INR|CNY|RMB|HKD|SGD|NZD)\s?[-+]?\s?[\d,]+(?:\.\d+)?)/giu;
+// Require an actual digit. Commas alone after a currency code ("USD, one entity")
+// describe a reporting basis, not a monetary amount needing recomputation.
+const CURRENCY_LITERAL = /(?:\p{Sc}\s?[-+]?\s?\d[\d,]*(?:\.\d+)?)|(?:\b\d[\d,]*(?:\.\d+)?\s?(?:dollars|euros|pounds|yen|rupees|USD|EUR|GBP|JPY|CAD|AUD|CHF|INR|CNY|RMB|HKD|SGD|NZD)\b)|(?:\b(?:USD|EUR|GBP|JPY|CAD|AUD|CHF|INR|CNY|RMB|HKD|SGD|NZD)\s?[-+]?\s?\d[\d,]*(?:\.\d+)?)/giu;
 
 const PLACEHOLDER = /\{\{([A-Za-z0-9_]+)\}\}/g;
 

@@ -11,13 +11,13 @@ import { listSources } from "./tools/source-tools";
 import { loadFixtureDatasets } from "./fixtures";
 
 const ORG = "aaaaaaaa-1111-4111-8111-111111111111", USER = "bbbbbbbb-2222-4222-8222-222222222222", WORKFLOW = "cccccccc-3333-4333-8333-333333333333";
-function fixture(past: Record<string, unknown> | null = null) {
+function fixture(past: Record<string, unknown> | null = null, writeError = false) {
   const filters: Record<string, unknown>[] = [];
   const writes: unknown[] = [];
   const db = { from() {
     const filter: Record<string, unknown> = {}; filters.push(filter);
     let update = false;
-    const chain = { select: () => chain, eq: (key: string, value: unknown) => { filter[key] = value; return chain; }, update: (value: unknown) => { writes.push(value); update = true; return chain; }, maybeSingle: async () => ({ data: update ? { workflow_id: WORKFLOW } : past, error: null }) };
+    const chain = { select: () => chain, eq: (key: string, value: unknown) => { filter[key] = value; return chain; }, update: (value: unknown) => { writes.push(value); update = true; return chain; }, maybeSingle: async () => ({ data: update ? (writeError ? null : { workflow_id: WORKFLOW }) : past, error: update && writeError ? { message: "Write unavailable" } : null }) };
     return chain;
   } } as unknown as SupabaseClient;
   const ctx: ToolContext = { db, orgId: ORG, userId: USER, workflowId: WORKFLOW, workflowType: "investigation", currentQuestion: "Which owner had the larger variance five months ago?", rows: [], datasets: { rows: [], summaries: [], unreadable: [] }, dataSources: [], analyses: [], discoveredSourceIds: new Set(), recommendations: [], turn: 1 };
@@ -48,7 +48,7 @@ describe("durable workspace recall tools", () => {
   it("retrieves bounded relevant context with trusted org/user scope and historical caveats", async () => {
     const { ctx } = fixture();
     const recalled = await initialWorkspaceRecall(ctx, ctx.currentQuestion!);
-    expect(mocks.search).toHaveBeenCalledWith(ctx.db, ORG, USER, expect.objectContaining({ limit: 5, kinds: ["question", "source", "interaction"] }));
+    expect(mocks.search).toHaveBeenCalledWith(ctx.db, ORG, USER, expect.objectContaining({ limit: 6, kinds: ["question", "source", "interaction"] }));
     expect(recalled.text).toContain("not current financial truth");
     expect(recalled.telemetry.estimated_tokens).toBeLessThanOrEqual(1500);
     expect(mocks.preferences).not.toHaveBeenCalled();
@@ -75,6 +75,7 @@ describe("durable workspace recall tools", () => {
   it("returns focused, pageable historical excerpts with bounded Unicode output", async () => {
     const prose = "Unrelated history. ".repeat(400) + "Target variance: verify the original source. " + "決算💶".repeat(1000);
     const { ctx } = fixture({ workflow_id: WORKFLOW, org_id: ORG, question: "Historical comparison?", answer: { prose, citations: [], partial: false }, status: "answered", created_at: "2026-05-02", source_ids: [sourceFixture.id] });
+    ctx.workflowId = "eeeeeeee-5555-4555-8555-555555555555";
     const result = await readPastConversation.run({ workflowId: WORKFLOW, query: "Target variance", limit: 2000 }, ctx);
     expect(result.ok).toBe(true);
     expect(result.data).toMatchObject({ queryMatched: true, totalAnswerChars: prose.length });
@@ -86,6 +87,7 @@ describe("durable workspace recall tools", () => {
     expect(next.data).toMatchObject({ excerptOffset: data.nextOffset });
     expect((await readPastConversation.run({ workflowId: WORKFLOW, offset: 0, query: "Target" }, ctx)).ok).toBe(false);
     const emoji = fixture({ workflow_id: WORKFLOW, org_id: ORG, question: "Unicode", answer: { prose: "💶💶", citations: [] }, created_at: "2026-05-02", status: "answered" });
+    emoji.ctx.workflowId = ctx.workflowId;
     const one = await readPastConversation.run({ workflowId: WORKFLOW, limit: 1 }, emoji.ctx);
     expect(one.data).toMatchObject({ answerExcerpt: "💶", nextOffset: 2 });
   });
@@ -114,12 +116,86 @@ describe("durable workspace recall tools", () => {
   it("reads dated original questions while preventing cross-organization results", async () => {
     const past = { workflow_id: WORKFLOW, org_id: ORG, created_at: "2026-05-02", question: "May variance?", answer: { prose: "Old, not current evidence", partial: false, citations: [{ sourceId: sourceFixture.tables[0].rows[0].sourceId, note: "source" }] }, status: "answered", source_ids: null, conversation_id: WORKFLOW };
     const { ctx, filters } = fixture(past);
+    ctx.workflowId = "eeeeeeee-5555-4555-8555-555555555555";
     const result = await readPastConversation.run({ workflowId: WORKFLOW }, ctx);
     expect(result.ok).toBe(true);
     expect(result.summary).toContain("not newly verified");
     expect(ctx.discoveredSourceIds?.has(sourceFixture.id)).toBe(true);
     expect(filters).toContainEqual({ org_id: ORG, workflow_id: WORKFLOW });
-    expect((await readPastConversation.run({ workflowId: WORKFLOW }, fixture({ ...past, org_id: "other-org" }).ctx)).ok).toBe(false);
+    const foreign = fixture({ ...past, org_id: "other-org" }).ctx;
+    foreign.workflowId = ctx.workflowId;
+    expect((await readPastConversation.run({ workflowId: WORKFLOW }, foreign)).ok).toBe(false);
+  });
+  it("excludes the current request from historical recall and fills its slot with an earlier match", async () => {
+    const { ctx } = fixture();
+    const current = { ...hit, id: WORKFLOW, kind: "question", workflowId: WORKFLOW.toUpperCase(), excerpt: "CURRENT QUESTION MUST NOT BECOME HISTORY" };
+    const earlier = { ...hit, id: "earlier", kind: "question", workflowId: "eeeeeeee-5555-4555-8555-555555555555", excerpt: "Earlier source-backed review" };
+    mocks.search.mockImplementation(async (_db, _org, _user, opts) => {
+      const candidates = opts.kinds?.includes("preference") ? [] : [current, earlier, hit];
+      return { enabled: true, results: candidates.slice(0, opts.limit), hasMore: candidates.length > opts.limit };
+    });
+    const recalled = await initialWorkspaceRecall(ctx, "May statements");
+    expect(recalled.text).not.toContain(current.excerpt);
+    expect(recalled.text).toContain(earlier.excerpt);
+    const searched = await searchWorkspaceHistory.run({ query: "May statements", limit: 1 }, ctx);
+    expect(mocks.search).toHaveBeenLastCalledWith(ctx.db, ORG, USER, expect.objectContaining({ limit: 2 }));
+    expect(JSON.stringify(searched)).not.toContain(current.excerpt);
+    expect(searched.data).toMatchObject({ hasMore: true, results: [{ workflowId: earlier.workflowId }] });
+  });
+  it("refuses to reopen the current question as an earlier conversation without querying it", async () => {
+    const { ctx, filters } = fixture();
+    const result = await readPastConversation.run({ workflowId: WORKFLOW }, ctx);
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("current question");
+    expect((await readPastConversation.run({ workflowId: WORKFLOW.toUpperCase() }, ctx)).ok).toBe(false);
+    expect(filters).toHaveLength(0);
+  });
+  it("activates a discovered batch once and returns exact schemas and samples without a second inspection", async () => {
+    const { ctx, writes } = fixture();
+    const second = { ...structuredClone(sourceFixture), id: "dddddddd-4444-4444-8444-444444444444", filename: "owners.json" };
+    ctx.discoveredSourceIds = new Set([sourceFixture.id, second.id]);
+    mocks.load.mockResolvedValue([sourceFixture, second]);
+    const result = await loadHistoricalSource.run({ sourceIds: [sourceFixture.id, second.id] }, ctx);
+    expect(result.ok).toBe(true);
+    expect(mocks.load).toHaveBeenCalledTimes(1);
+    expect(mocks.load).toHaveBeenCalledWith(ctx.db, ORG, [sourceFixture.id, second.id]);
+    expect(writes).toEqual([{ source_ids: [sourceFixture.id, second.id] }]);
+    expect(result.data).toMatchObject({ sources: [{ sourceId: sourceFixture.id, tables: [{ columns: sourceFixture.tables[0].columns, sample: sourceFixture.tables[0].rows.slice(0, 2), omittedRows: 1 }] }, { sourceId: second.id }] });
+    expect(JSON.stringify(result).length).toBeLessThan(6000);
+  });
+  it("rejects malformed, mixed, over-limit or undiscovered batches before loading or saving any source", async () => {
+    const { ctx, writes } = fixture(); ctx.discoveredSourceIds!.add(sourceFixture.id);
+    for (const args of [
+      {}, { sourceIds: [] }, { sourceIds: "not-array" }, { sourceIds: [null] },
+      { sourceId: sourceFixture.id, sourceIds: [sourceFixture.id] },
+      { sourceIds: [sourceFixture.id, sourceFixture.id] },
+      { sourceIds: Array.from({ length: 11 }, (_, i) => `dddddddd-4444-4444-8444-${String(i).padStart(12, "0")}`) },
+      { sourceIds: [sourceFixture.id, "dddddddd-4444-4444-8444-444444444444"] },
+    ]) expect((await loadHistoricalSource.run(args, ctx)).ok).toBe(false);
+    expect(mocks.load).not.toHaveBeenCalled(); expect(writes).toHaveLength(0);
+  });
+  it("preserves active inputs on failed batch verification or persistence and rechecks already-active files", async () => {
+    const { ctx, writes } = fixture();
+    ctx.dataSources = [sourceFixture];
+    const original = ctx.dataSources;
+    ctx.discoveredSourceIds!.add(sourceFixture.id);
+    mocks.load.mockRejectedValueOnce(new Error("Original deleted or hash changed"));
+    expect((await loadHistoricalSource.run({ sourceIds: [sourceFixture.id] }, ctx)).ok).toBe(false);
+    expect(ctx.dataSources).toBe(original); expect(ctx.dataSources).toEqual([sourceFixture]); expect(writes).toHaveLength(0);
+    const unavailable = fixture(null, true);
+    unavailable.ctx.discoveredSourceIds!.add(sourceFixture.id);
+    const failed = await loadHistoricalSource.run({ sourceIds: [sourceFixture.id] }, unavailable.ctx);
+    expect(failed.ok).toBe(false); expect(failed.data).toBeUndefined();
+    expect(unavailable.ctx.dataSources).toEqual([]);
+  });
+  it("checks combined source limits before a batch activation and respects recall opt-out", async () => {
+    const { ctx } = fixture();
+    ctx.dataSources = Array.from({ length: 10 }, (_, i) => ({ ...sourceFixture, id: `dddddddd-4444-4444-8444-${String(i).padStart(12, "0")}` }));
+    ctx.discoveredSourceIds!.add(sourceFixture.id);
+    expect((await loadHistoricalSource.run({ sourceIds: [sourceFixture.id] }, ctx)).ok).toBe(false);
+    ctx.dataSources = []; ctx.memoryEnabled = false;
+    expect((await loadHistoricalSource.run({ sourceIds: [sourceFixture.id] }, ctx)).ok).toBe(false);
+    expect(mocks.load).not.toHaveBeenCalled();
   });
   it("does not resurrect deleted/inaccessible sources from an old answer", async () => {
     const { ctx, writes } = fixture(); ctx.discoveredSourceIds!.add(sourceFixture.id);

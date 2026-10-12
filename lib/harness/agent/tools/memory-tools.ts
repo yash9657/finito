@@ -1,7 +1,9 @@
 import { getMemorySettings, savePreference, searchMemory } from "@/lib/memory/store";
 import { loadDataSources } from "@/lib/data/store";
+import { DATA_LIMITS } from "@/lib/data/types";
+import { sourcePreviews } from "../source-preview";
 import { clipUtf8, compactSearchResult, MEMORY_TOOL_BYTES, recallQuery, selectMemoryContext, type PriorConversation, type ContextSelection } from "../memory-context";
-import type { MemoryKind } from "@/lib/memory/types";
+import type { MemoryKind, MemorySearchResult } from "@/lib/memory/types";
 import type { InvestigationAnswer } from "@/lib/types";
 import { DATASET_LOAD_LIMITS, loadOrgDatasets } from "@/lib/harness/agent/datasets";
 import { fail, type AgentTool, type ToolContext } from "./types";
@@ -9,6 +11,14 @@ import { fail, type AgentTool, type ToolContext } from "./types";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NO_MEMORY = "Workspace recall is unavailable or disabled. Use selected current sources; the user can manage recall in settings.";
 const EXPLICIT_PREFERENCE = /(?:^|[.!?;]\s+|\band\s+)(?:(?:please\s+)?remember(?:\s+that\b|\s+to\b|\s*:\s*|\s+(?:my|our|i)\b)|(?:can|could|would)\s+you\s+(?:please\s+)?remember(?:\s+that\b|\s+to\b|\s*:\s*|\s+(?:my|our|i)\b)|i\s+prefer\b|my\s+preference\b|from\s+now\s+on\b|always\s+(?:use|show)\b)/i;
+
+/** The current request is already in the prompt, not evidence of an earlier discussion.
+ * Fetch one extra candidate before filtering so that this one record cannot consume a slot.
+ */
+function priorMatches(result: MemorySearchResult, workflowId: string, limit: number): MemorySearchResult {
+  const results = result.results.filter(hit => !(hit.kind === "question" && hit.workflowId?.toLowerCase() === workflowId.toLowerCase()));
+  return { ...result, results: results.slice(0, limit), hasMore: result.hasMore || results.length > limit };
+}
 
 export async function memoryAllowed(ctx: ToolContext): Promise<boolean> {
   if (!ctx.userId || ctx.memoryEnabled === false) return false;
@@ -35,7 +45,8 @@ export async function initialWorkspaceRecall(ctx: ToolContext, question: string,
     if (!query) return selectMemoryContext({ question, history, note: "No distinctive retrieval terms. Search history only when needed for this question." });
     // Independent indexed lookups prevent generic source hits from drowning out relevant preferences.
     const [historical, preferences, presentation] = await Promise.allSettled([
-      searchMemory(ctx.db, ctx.orgId, ctx.userId, { query, kinds: ["question", "source", "interaction"], limit: 5 }),
+      searchMemory(ctx.db, ctx.orgId, ctx.userId, { query, kinds: ["question", "source", "interaction"], limit: 6 })
+        .then(result => priorMatches(result, ctx.workflowId, 5)),
       searchMemory(ctx.db, ctx.orgId, ctx.userId, { query, kinds: ["preference"], limit: 3 }),
       // Standing response-format preferences can be relevant even without financial-keyword overlap.
       searchMemory(ctx.db, ctx.orgId, ctx.userId, { query: '"concise" OR "brief" OR "format" OR "language" OR "answers" OR "responses"', kinds: ["preference"], limit: 2 }),
@@ -76,7 +87,7 @@ export const searchWorkspaceHistory: AgentTool = {
       if (args.kinds !== undefined && (!Array.isArray(args.kinds) || !args.kinds.every((kind) => ["question", "source", "preference", "interaction"].includes(String(kind))))) return fail("Invalid history kinds.", "Use question, source, preference or interaction.");
       const limit = args.limit ?? 5;
       if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 10) return fail("Search limit must be 1–10.", "Narrow your query instead of requesting the entire history.");
-      const result = await searchMemory(ctx.db, ctx.orgId, ctx.userId!, { query: args.query, kinds: args.kinds as MemoryKind[] | undefined, since: args.since as string | undefined, until: args.until as string | undefined, limit });
+      const result = priorMatches(await searchMemory(ctx.db, ctx.orgId, ctx.userId!, { query: args.query, kinds: args.kinds as MemoryKind[] | undefined, since: args.since as string | undefined, until: args.until as string | undefined, limit: limit + 1 }), ctx.workflowId, limit);
       const selected = compactSearchResult(result);
       discoverMemorySources(ctx, selected.results.map(item => ({ sourceId: typeof item.sourceId === "string" ? item.sourceId : null, workflowId: typeof item.workflowId === "string" ? item.workflowId : null })));
       return { ok: true, summary: `${selected.results.length} compact historical matches; ${selected.omittedCount} omitted. Past results require re-verification.`, data: selected, hint: "Read question workflowId with read_past_conversation; activate sourceId with load_historical_source. Source hits with only workflowId use load_historical_workflow. Narrow query/dates to retrieve omitted matches. Interaction hits are private activity pointers, never financial evidence." };
@@ -97,6 +108,7 @@ export const readPastConversation: AgentTool = {
     try {
       if (!(await memoryAllowed(ctx))) return fail(NO_MEMORY, "Continue with current selected sources.");
       if (typeof args.workflowId !== "string" || !UUID.test(args.workflowId)) return fail("Use a valid historical question ID.", "Get workflowId from search_workspace_history.");
+      if (args.workflowId.toLowerCase() === ctx.workflowId.toLowerCase()) return fail("This is the current question, not a past conversation.", "The current human request is already in context. Use a different historical question ID only if earlier details are needed.");
       if (args.query !== undefined && (typeof args.query !== "string" || !args.query.trim() || args.query.length > 200)) return fail("Use a literal query of 1–200 characters.", "Choose a distinctive phrase from the earlier answer.");
       if (args.offset !== undefined && (typeof args.offset !== "number" || !Number.isInteger(args.offset) || args.offset < 0)) return fail("Offset must be a non-negative integer.", "Use the preceding nextOffset.");
       if (args.offset !== undefined && args.query !== undefined) return fail("Choose query or offset, not both.", "Query locates a phrase; offset reads a following slice.");
@@ -142,21 +154,26 @@ export const readPastConversation: AgentTool = {
 
 export const loadHistoricalSource: AgentTool = {
   name: "load_historical_source",
-  description: "Activate an existing retained file discovered by history search or a past conversation. Reuses old uploads without asking for another upload. Current organization access, source status, SHA-256, and combined source limits are rechecked. This changes only the investigation's source selection, never the source file.",
-  parameters: { type: "object", properties: { sourceId: { type: "string", description: "Source UUID discovered by workspace history or a past conversation." } }, required: ["sourceId"], additionalProperties: false },
+  description: "Activate retained files discovered by history or a past conversation, and return bounded exact schema/row previews in the same call. Prefer sourceIds to load all relevant known files together. Access, status, SHA-256 and combined limits are rechecked for the whole selection. Only conversation source selection changes; files stay immutable. Inspect further only where previews omit needed evidence.",
+  parameters: { type: "object", properties: {
+    sourceId: { type: "string", description: "One discovered source UUID. Use either sourceId or sourceIds, never both." },
+    sourceIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 10, description: "1–10 distinct discovered source UUIDs to activate and preview together. Include only files needed for the current question." },
+  }, required: [], additionalProperties: false },
   async run(args, ctx) {
     try {
       if (!(await memoryAllowed(ctx))) return fail(NO_MEMORY, "Select a current file explicitly instead.");
-      if (typeof args.sourceId !== "string" || !ctx.discoveredSourceIds?.has(args.sourceId)) return fail("This historical source has not been discovered in the current workspace.", "Search workspace history or read the relevant historical question before selecting a source.");
+      if ((args.sourceId !== undefined) === (args.sourceIds !== undefined)) return fail("Provide sourceId or sourceIds, never both.", "Use sourceIds to activate the relevant known files in one call.");
+      const requested = args.sourceIds ?? [args.sourceId];
+      if (!Array.isArray(requested) || requested.length < 1 || requested.length > DATA_LIMITS.maxSourcesPerLoad || requested.some(id => typeof id !== "string" || !UUID.test(id)) || new Set(requested).size !== requested.length) return fail("Select 1–10 distinct valid source IDs.", "Use exact source UUIDs returned by workspace history.");
+      if (requested.some(id => !ctx.discoveredSourceIds?.has(id))) return fail("A historical source has not been discovered in the current workspace.", "Search workspace history or read the relevant historical question before selecting a source. No files were activated.");
       const current = ctx.dataSources ??= [];
-      if (current.some((source) => source.id === args.sourceId)) return { ok: true, summary: "This source is already active.", hint: "Use inspect_source or read_source_rows to examine it." };
-      const ids = [...current.map((source) => source.id), args.sourceId];
+      const ids = [...new Set([...current.map(source => source.id), ...requested as string[]])];
+      if (ids.length > DATA_LIMITS.maxSourcesPerLoad) return fail("The combined selection exceeds 10 sources.", "Start a narrower investigation. No sources were activated.");
       const loaded = await loadDataSources(ctx.db, ctx.orgId, ids);
       const { data, error } = await ctx.db.from("investigations").update({ source_ids: ids }).eq("org_id", ctx.orgId).eq("workflow_id", ctx.workflowId).select("workflow_id").maybeSingle();
       if (error || !data) return fail("The historical file was verified but its source selection could not be saved.", "Retry; this file has not been activated.");
       current.splice(0, current.length, ...loaded);
-      const source = loaded.find((item) => item.id === args.sourceId)!;
-      return { ok: true, summary: `Activated retained source "${source.filename}". Current access and original content hash verified.`, data: { sourceId: source.id, filename: source.filename, sha256: source.sha256, tables: source.tables.map((table) => ({ tableId: table.id, name: table.name, columns: table.columns, rowCount: table.rowCount })), warnings: source.warnings }, hint: "Inspect the source and confirm its reporting period/version matches the current question; an old file is not current data by default." };
+      return { ok: true, summary: `Activated ${requested.length} retained source(s). Current access and original content hashes verified.`, data: sourcePreviews(loaded.filter(source => requested.includes(source.id))), hint: "Use these exact schemas/previews directly when sufficient. Positive omitted counts require inspect_source/read_source_rows for needed details; samples are not full-table totals. Check period, version and units; run_analysis receives complete selected tables. Old files are not current data by default." };
     } catch (error) { return fail(error instanceof Error ? error.message : "The retained file could not be activated.", "Deleted, inaccessible or changed files cannot be reconstructed from old answers. Choose another retained source or explain exactly which original is missing."); }
   },
 };

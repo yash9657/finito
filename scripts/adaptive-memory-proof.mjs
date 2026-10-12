@@ -55,6 +55,7 @@ async function main() {
   let userId;
   let ownedOrg;
   const sources = [];
+  const sourceRecords = new Map();
   const runs = [];
   async function api(route, method = "GET", data) {
     const res = await page.request.fetch(base + route, {
@@ -93,7 +94,7 @@ async function main() {
       { mode: 0o600 },
     );
     fail(
-      inv?.status === "answered" && inv.answer,
+      inv?.status === "answered" && inv.answer && inv.answer.partial === false,
       `Question ${runs.length} did not complete: ${inv?.status}/${inv?.termination_reason}`,
     );
     const toolNames = [
@@ -106,6 +107,9 @@ async function main() {
     const modelUsage = detail.events.filter(
       (event) => event.payload?.kind === "model_usage",
     );
+    const calls = detail.events.filter((event) => event.event_type === "tool_called");
+    const activated = [...new Set(calls.filter((event) => event.payload.tool === "load_historical_source")
+      .flatMap((event) => event.payload.arguments?.sourceIds ?? [event.payload.arguments?.sourceId]))];
     const memoryContext = detail.events.find(
       (event) => event.payload?.memory_context,
     )?.payload.memory_context;
@@ -117,9 +121,17 @@ async function main() {
     console.log(
       JSON.stringify({
         check: `live answer ${runs.length}`,
+        proofId: created.id,
         status: inv.status,
         turns: inv.turns_used,
         tokens: inv.tokens_in + inv.tokens_out,
+        inputTokens: inv.tokens_in,
+        outputTokens: inv.tokens_out,
+        modelCalls: modelUsage.length,
+        finalizationCalls: modelUsage.filter(event => event.payload.step_key === "investigate_answer").length,
+        models: [...new Set(modelUsage.map(event => event.model_used))],
+        toolCalls: calls.length,
+        activatedFiles: activated.map(id => sourceRecords.get(id)?.filename ?? "unknown source"),
         elapsedMs: Date.now() - started,
         tools: toolNames,
         memoryContext,
@@ -227,6 +239,7 @@ async function main() {
       const body = await response.json();
       fail(response.ok(), `Upload ${name}: ${body.error}`);
       sources.push(body.source.id);
+      sourceRecords.set(body.source.id, body.source);
       await api(
         `/api/data-sources/${body.source.id}?preview=1&tableId=t0&limit=2`,
       );
@@ -374,6 +387,19 @@ async function main() {
       historical.investigation.answer.prose.includes("Maya"),
       "Historical answer named the wrong owner.",
     );
+    const analyses = historical.investigation.answer.analyses ?? [];
+    function hasScalar(value, predicate) {
+      if (predicate(value)) return true;
+      if (Array.isArray(value)) return value.some(item => hasScalar(item, predicate));
+      return value !== null && typeof value === "object" && Object.values(value).some(item => hasScalar(item, predicate));
+    }
+    fail(analyses.some(analysis =>
+      hasScalar(analysis.output, value => value === "Maya") &&
+      hasScalar(analysis.output, value => (typeof value === "number" || typeof value === "string" && /^\d+(\.\d+)?$/.test(value)) && Number(value) === 250.10)),
+    "Historical analysis did not retain the expected owner and exact-decimal variance result.");
+    fail(analyses.every(analysis => analysis.inputs.every(input =>
+      sourceRecords.get(input.sourceId)?.sha256 === input.sha256)),
+    "Historical analysis provenance differs from the uploaded original hashes.");
     console.log(
       "PASS five-month synthetic recall with no files selected, original-source reopening and fresh computation",
     );
