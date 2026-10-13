@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 740" width="1200" height="740" role="img" aria-labelledby="title desc">
+  <title id="title">Finflow investigations and memory</title>
+  <desc id="desc">Data library ingestion, the bounded investigator agent loop with its closed tool registry and QuickJS sandbox, and the append-only harness_events stream streamed to the browser over Supabase Realtime.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #0f172a; }
+      .title { font-size: 22px; font-weight: 700; }
+      .sub { font-size: 13px; fill: #475569; }
+      .h { font-size: 14px; font-weight: 700; }
+      .hs { font-size: 13px; font-weight: 700; }
+      .m { font-size: 12px; fill: #475569; }
+      .n { font-size: 12px; fill: #0f172a; }
+      .k { font-size: 12px; fill: #1e293b; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .lbl { font-size: 12px; fill: #334155; paint-order: stroke; stroke: #ffffff; stroke-width: 5px; stroke-linejoin: round; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.5; marker-end: url(#arrow); }
+      .app { fill: #f8fafc; stroke: #64748b; stroke-width: 1.2; }
+      .sb { fill: #ecfdf5; stroke: #3ECF8E; stroke-width: 1.5; }
+      .ext { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 1.5; }
+      .node { fill: #ffffff; stroke: #334155; stroke-width: 1.2; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="740" rx="16" fill="#ffffff"/>
+  <text x="40" y="38" class="title">Finflow — investigations, data library &amp; memory</text>
+  <text x="40" y="60" class="sub">“Ask your data”: a bounded tool-calling agent whose every step is an append-only event; it can read and propose, never execute</text>
+
+  <!-- Left: data library ingest -->
+  <text x="40" y="88" class="hs">Data library ingest</text>
+  <rect x="40" y="98" width="280" height="62" rx="8" class="app"/>
+  <text x="54" y="120" class="hs">POST /api/data-sources</text>
+  <text x="54" y="140" class="m">≤ 20 MiB per file · header overrides</text>
+  <rect x="40" y="176" width="280" height="80" rx="8" class="app"/>
+  <text x="54" y="198" class="hs">Parse · lib/data/parser.ts</text>
+  <text x="54" y="218" class="m">CSV/TSV · XLS/XLSX · JSON/JSONL</text>
+  <text x="54" y="236" class="m">TXT/Markdown · PDF text (unpdf)</text>
+  <rect x="40" y="272" width="280" height="80" rx="8" class="app"/>
+  <text x="54" y="294" class="hs">Immutable source identity</text>
+  <text x="54" y="314" class="m">sha256 · sheets · header row · preamble</text>
+  <text x="54" y="332" class="m">original row numbers kept for citations</text>
+  <rect x="40" y="368" width="280" height="62" rx="8" class="sb"/>
+  <text x="54" y="390" class="hs">Storage · analysis-sources</text>
+  <text x="54" y="410" class="m">private bucket · key org_id/source_id</text>
+  <rect x="40" y="446" width="280" height="62" rx="8" class="sb"/>
+  <text x="54" y="468" class="hs">data_sources</text>
+  <text x="54" y="488" class="m">manifest · status · parse options</text>
+  <rect x="40" y="524" width="280" height="80" rx="8" class="sb"/>
+  <text x="54" y="546" class="hs">source_memory_chunks</text>
+  <text x="54" y="566" class="m">RPC replace_source_memory_chunks</text>
+  <text x="54" y="584" class="m">tsvector + GIN (lexical, not semantic)</text>
+  <path class="edge" d="M180 160 V174"/>
+  <path class="edge" d="M180 256 V270"/>
+  <path class="edge" d="M180 352 V366"/>
+  <path class="edge" d="M180 430 V444"/>
+  <path class="edge" d="M180 508 V522"/>
+
+  <!-- Center: request + loop -->
+  <rect x="350" y="74" width="480" height="96" rx="8" class="app"/>
+  <text x="364" y="96" class="hs">POST /api/investigations</text>
+  <text x="364" y="116" class="m">zod · source-scope check · resolveInvestigatorModel (fail fast)</text>
+  <text x="364" y="134" class="m">createInvestigation → workflows row + investigations projection</text>
+  <text x="364" y="152" class="m">202 Accepted · waitUntil(executeInvestigation)</text>
+  <path class="edge" d="M590 170 V186"/>
+
+  <rect x="350" y="188" width="480" height="174" rx="10" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="364" y="210" class="hs">Agent loop · lib/harness/agent/loop.ts</text>
+  <rect x="364" y="224" width="96" height="32" rx="6" class="node"/><text x="412" y="245" text-anchor="middle" class="n">turn started</text>
+  <rect x="478" y="224" width="112" height="32" rx="6" class="node"/><text x="534" y="245" text-anchor="middle" class="n">dispatchTools</text>
+  <rect x="608" y="224" width="96" height="32" rx="6" class="node"/><text x="656" y="245" text-anchor="middle" class="n">tool_called ×N</text>
+  <rect x="716" y="224" width="102" height="32" rx="6" class="node"/><text x="767" y="245" text-anchor="middle" class="n">tool_returned</text>
+  <path class="edge" d="M460 240 H476"/>
+  <path class="edge" d="M590 240 H606"/>
+  <path class="edge" d="M704 240 H714"/>
+  <path class="edge" d="M767 256 V270 H412 V258"/>
+  <rect x="458" y="262" width="264" height="16" fill="#f1f5f9"/>
+  <text x="590" y="274" text-anchor="middle" class="lbl">next turn (context compacted when needed)</text>
+  <text x="364" y="298" class="m">Exit: agent_answered — cited figures recomputed in TS (answer.ts)</text>
+  <text x="364" y="316" class="m">or agent_terminated — budget, loop detected, error (partial, labelled)</text>
+  <text x="364" y="336" class="m">Budget default 20 turns · 300k tokens · 5 min; ceiling 40 · 1M · 15 min</text>
+  <text x="364" y="354" class="m">Production wall clock capped at 270 s (function maxDuration 300 s)</text>
+
+  <!-- Tools -->
+  <rect x="350" y="374" width="480" height="238" rx="10" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+  <text x="364" y="396" class="hs">Closed tool registry · role investigator</text>
+  <text x="364" y="416" class="n" font-weight="600">Sources (data library)</text>
+  <text x="364" y="434" class="k">list_sources inspect_source read_source_rows run_analysis</text>
+  <text x="364" y="458" class="n" font-weight="600">Pipeline data</text>
+  <text x="364" y="476" class="k">list_datasets query_ledger get_transactions</text>
+  <text x="364" y="494" class="k">compare_periods find_anomalies get_workflow_history</text>
+  <text x="364" y="518" class="n" font-weight="600">Memory (via search_durable_memory)</text>
+  <text x="364" y="536" class="k">search_workspace_history read_past_conversation</text>
+  <text x="364" y="554" class="k">load_historical_source/_workflow save_user_preference</text>
+  <text x="364" y="578" class="n" font-weight="600">Proposal only</text>
+  <text x="364" y="596" class="m"><tspan class="k">recommend_action</tspan> → verifier → approvals gate → action_requests</text>
+
+  <!-- tools to left column -->
+  <path class="edge" d="M350 410 H322"/>
+  <path class="edge" d="M350 548 H322"/>
+
+  <!-- Bottom center: sandbox + LLM -->
+  <rect x="350" y="636" width="230" height="84" rx="8" class="app"/>
+  <text x="364" y="658" class="hs">QuickJS WASM sandbox</text>
+  <text x="364" y="678" class="m">worker_threads · no fs/net/pkgs</text>
+  <text x="364" y="696" class="m">4 MiB in · 24 KiB out · 32 MiB</text>
+  <text x="364" y="713" class="m">1.5 s interrupt · 5 s hard kill</text>
+  <path class="edge" d="M465 612 V634"/>
+  <text x="474" y="628" class="lbl">run_analysis</text>
+
+  <rect x="600" y="636" width="230" height="84" rx="8" class="ext"/>
+  <text x="614" y="658" class="hs">LLM provider</text>
+  <text x="614" y="678" class="m">native tool calling over HTTPS</text>
+  <text x="614" y="696" class="m">Fireworks default (role pin /</text>
+  <text x="614" y="713" class="m">org default / env fallback)</text>
+  <path class="edge" d="M830 240 H852 V678 H832"/>
+
+  <!-- Right: event stream -->
+  <rect x="880" y="74" width="280" height="186" rx="8" class="sb"/>
+  <text x="894" y="96" class="hs">harness_events (append-only)</text>
+  <text x="894" y="117" class="m">sole writer: lib/harness/events.ts</text>
+  <text x="894" y="135" class="m">RPC append_harness_event: row lock</text>
+  <text x="894" y="153" class="m">→ gapless sequence_number per run</text>
+  <text x="894" y="171" class="m">caused_by links result → call</text>
+  <text x="894" y="189" class="m">turn_number · provider/model · input_hash</text>
+  <text x="894" y="207" class="m">payload redacted · no UPDATE grant</text>
+  <text x="894" y="225" class="m">RLS: org members SELECT only</text>
+  <text x="894" y="247" class="m">20 event types (step + agent lifecycle)</text>
+  <path class="edge" d="M830 214 H878"/>
+  <text x="854" y="207" text-anchor="middle" class="lbl">append</text>
+
+  <rect x="880" y="280" width="280" height="62" rx="8" class="sb"/>
+  <text x="894" y="302" class="hs">Supabase Realtime</text>
+  <text x="894" y="322" class="m">harness_events + investigations changes</text>
+  <path class="edge" d="M1020 260 V278"/>
+
+  <rect x="880" y="362" width="280" height="80" rx="8" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="894" y="384" class="hs">Browser · InvestigationView</text>
+  <text x="894" y="404" class="m">useInvestigation subscribes over WSS</text>
+  <text x="894" y="422" class="m">turns, tool calls, answer, citations</text>
+  <path class="edge" d="M1020 342 V360"/>
+
+  <rect x="880" y="462" width="280" height="62" rx="8" class="sb"/>
+  <text x="894" y="484" class="hs">investigations (projection)</text>
+  <text x="894" y="504" class="m">status · answer · memory_search tsvector</text>
+
+  <rect x="880" y="540" width="280" height="72" rx="8" class="sb"/>
+  <text x="894" y="562" class="hs">interaction_events</text>
+  <text x="894" y="582" class="m">DB triggers on 10 tables → private</text>
+  <text x="894" y="600" class="m">activity ledger (no drafts/keystrokes)</text>
+
+  <rect x="880" y="628" width="280" height="62" rx="8" class="sb"/>
+  <text x="894" y="650" class="hs">memory_preferences · _settings</text>
+  <text x="894" y="670" class="m">per-user, editable, can be disabled</text>
+</svg>

@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 770" width="1200" height="770" role="img" aria-labelledby="title desc">
+  <title id="title">Finflow pipeline workflows</title>
+  <desc id="desc">API sequence for pipeline workflows, the three DAGs run by the orchestrator, the per-action authorization gate, and the Postgres tables they write.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #0f172a; }
+      .title { font-size: 22px; font-weight: 700; }
+      .sub { font-size: 13px; fill: #475569; }
+      .h { font-size: 14px; font-weight: 700; }
+      .hs { font-size: 13px; font-weight: 700; }
+      .m { font-size: 12px; fill: #475569; }
+      .n { font-size: 12px; fill: #0f172a; }
+      .amb { fill: #b45309; }
+      .lbl { font-size: 12px; fill: #334155; paint-order: stroke; stroke: #ffffff; stroke-width: 5px; stroke-linejoin: round; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.5; marker-end: url(#arrow); }
+      .det { fill: #ffffff; stroke: #64748b; stroke-width: 1.2; }
+      .llm { fill: #e2e8f0; stroke: #334155; stroke-width: 1.2; }
+      .gate { fill: #fffbeb; stroke: #d97706; stroke-width: 1.8; }
+      .api { fill: #f8fafc; stroke: #64748b; stroke-width: 1.2; }
+      .chip { fill: #ffffff; stroke: #3ECF8E; stroke-width: 1.2; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="770" rx="16" fill="#ffffff"/>
+  <text x="40" y="38" class="title">Finflow — pipeline workflows</text>
+  <text x="40" y="60" class="sub">Reconciliation, AP matching and FP&amp;A commentary: deterministic DAGs with bounded LLM judgment and a per-action authorization gate</text>
+
+  <!-- Left: API sequence -->
+  <text x="40" y="84" class="hs">API sequence (route handlers)</text>
+  <rect x="40" y="94" width="230" height="66" rx="8" class="api"/>
+  <text x="52" y="116" class="hs">1 · POST /api/workflows</text>
+  <text x="52" y="136" class="m">create run row (status idle)</text>
+  <rect x="40" y="172" width="230" height="74" rx="8" class="api"/>
+  <text x="52" y="194" class="hs">2 · POST …/[id]/upload</text>
+  <text x="52" y="214" class="m">CSV → sha256 → workflow-files</text>
+  <text x="52" y="232" class="m">RPC replace_workflow_file (atomic)</text>
+  <rect x="40" y="258" width="230" height="74" rx="8" class="api"/>
+  <text x="52" y="280" class="hs">3 · POST …/[id]/run</text>
+  <text x="52" y="300" class="m">inputs present · provider resolves</text>
+  <text x="52" y="318" class="m">CAS → running · 202 · waitUntil</text>
+  <rect x="40" y="344" width="230" height="66" rx="8" class="api"/>
+  <text x="52" y="366" class="hs">4 · GET …/[id]/status</text>
+  <text x="52" y="386" class="m">read-only · UI polls every 2 s</text>
+  <rect x="40" y="422" width="230" height="74" rx="8" class="api"/>
+  <text x="52" y="444" class="hs">5 · POST …/[id]/approvals</text>
+  <text x="52" y="464" class="m">decide pending actions</text>
+  <text x="52" y="482" class="m">last decision → resume run</text>
+  <rect x="40" y="508" width="230" height="74" rx="8" class="api"/>
+  <text x="52" y="530" class="hs">6 · POST …/[id]/review</text>
+  <text x="52" y="550" class="m">RPC submit_workflow_review</text>
+  <text x="52" y="568" class="m">→ report page · XLSX download</text>
+
+  <!-- Center: orchestrator -->
+  <rect x="290" y="74" width="620" height="508" rx="12" fill="#f8fafc" stroke="#334155" stroke-width="1.5"/>
+  <text x="306" y="100" class="h">runWorkflow(id) · lib/agents/orchestrator.ts</text>
+  <text x="306" y="120" class="m">Runs the ready set (all dependsOn complete) concurrently · retries a step ×3 (1 s, 4 s backoff)</text>
+  <text x="306" y="138" class="m">Final failure → run error; re-POST /run resumes · complete steps never re-run · validateDag at import</text>
+
+  <!-- Reconciliation -->
+  <text x="306" y="168" class="hs">Reconciliation <tspan class="m">· erp_export + bank_statement</tspan></text>
+  <rect x="303" y="178" width="106" height="30" rx="6" class="det"/><text x="356" y="198" text-anchor="middle" class="n">parse_erp</text>
+  <rect x="303" y="216" width="106" height="30" rx="6" class="det"/><text x="356" y="236" text-anchor="middle" class="n">parse_bank</text>
+  <rect x="425" y="197" width="106" height="30" rx="6" class="llm"/><text x="478" y="217" text-anchor="middle" class="n">match</text>
+  <rect x="547" y="197" width="106" height="30" rx="6" class="llm"/><text x="600" y="217" text-anchor="middle" class="n">flag</text>
+  <rect x="669" y="197" width="106" height="30" rx="6" class="llm"/><text x="722" y="217" text-anchor="middle" class="n">report</text>
+  <path class="edge" d="M409 193 L423 207"/>
+  <path class="edge" d="M409 231 L423 218"/>
+  <path class="edge" d="M531 212 H545"/>
+  <path class="edge" d="M653 212 H667"/>
+
+  <!-- AP -->
+  <text x="306" y="278" class="hs">AP matching <tspan class="m">· po + invoice</tspan></text>
+  <rect x="303" y="288" width="106" height="30" rx="6" class="det"/><text x="356" y="308" text-anchor="middle" class="n">parse_pos</text>
+  <rect x="303" y="326" width="106" height="30" rx="6" class="det"/><text x="356" y="346" text-anchor="middle" class="n">parse_invoices</text>
+  <rect x="425" y="307" width="106" height="30" rx="6" class="llm"/><text x="478" y="327" text-anchor="middle" class="n">match_invoices</text>
+  <rect x="547" y="307" width="106" height="30" rx="6" class="llm"/><text x="600" y="327" text-anchor="middle" class="n">flag_invoices</text>
+  <rect x="669" y="307" width="120" height="30" rx="6" class="gate"/><text x="729" y="327" text-anchor="middle" class="n">approval_queue</text>
+  <text x="729" y="355" text-anchor="middle" class="m amb">risk: moves_money</text>
+  <path class="edge" d="M409 303 L423 317"/>
+  <path class="edge" d="M409 341 L423 328"/>
+  <path class="edge" d="M531 322 H545"/>
+  <path class="edge" d="M653 322 H667"/>
+
+  <!-- FP&A -->
+  <text x="306" y="390" class="hs">FP&amp;A commentary <tspan class="m">· budget + actuals</tspan></text>
+  <rect x="303" y="400" width="106" height="30" rx="6" class="det"/><text x="356" y="420" text-anchor="middle" class="n">parse_join</text>
+  <rect x="425" y="400" width="106" height="30" rx="6" class="det"/><text x="478" y="420" text-anchor="middle" class="n">compute_var.</text>
+  <rect x="547" y="400" width="106" height="30" rx="6" class="det"/><text x="600" y="420" text-anchor="middle" class="n">rank_variances</text>
+  <rect x="669" y="400" width="106" height="30" rx="6" class="llm"/><text x="722" y="420" text-anchor="middle" class="n">commentary</text>
+  <rect x="791" y="400" width="106" height="30" rx="6" class="llm"/><text x="844" y="420" text-anchor="middle" class="n">board_deck</text>
+  <path class="edge" d="M409 415 H423"/>
+  <path class="edge" d="M531 415 H545"/>
+  <path class="edge" d="M653 415 H667"/>
+  <path class="edge" d="M775 415 H789"/>
+  <path class="edge" d="M600 430 V446 H844 V432"/>
+
+  <!-- step legend + LLM contract -->
+  <rect x="306" y="466" width="14" height="14" rx="3" class="det"/><text x="328" y="478" class="m">deterministic TypeScript step</text>
+  <rect x="510" y="466" width="14" height="14" rx="3" class="llm"/><text x="532" y="478" class="m">LLM-assisted step</text>
+  <rect x="664" y="466" width="14" height="14" rx="3" class="gate"/><text x="686" y="478" class="m">authorization-gated step</text>
+  <rect x="306" y="488" width="588" height="86" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="320" y="508" class="hs">LLM contract (D3 / D4)</text>
+  <text x="320" y="527" class="m">ctx.llm({system, user, schema}) → router (step pin → role pin → org default → env) → provider</text>
+  <text x="320" y="545" class="m">native JSON-schema output → zod validate, retry once · returned IDs checked against the dataset</text>
+  <text x="320" y="563" class="m">every reported number recomputed in code · llm_raw redacted + capped, never sent to the browser</text>
+
+  <!-- Right: authorization gate -->
+  <rect x="930" y="74" width="230" height="508" rx="12" fill="#ffffff" stroke="#d97706" stroke-width="1.8"/>
+  <text x="944" y="100" class="h">Authorization gate</text>
+  <text x="944" y="120" class="m">lib/approvals/engine.ts (pure)</text>
+  <text x="944" y="146" class="m">approval_queue proposes one</text>
+  <text x="944" y="163" class="m">approve_invoice_payment per</text>
+  <text x="944" y="180" class="m">payable invoice — computed in</text>
+  <text x="944" y="197" class="m">TypeScript, never by the model</text>
+  <text x="944" y="226" class="hs">1 · Structural ceilings</text>
+  <text x="944" y="244" class="m">hard_deny_above_cents, counter-</text>
+  <text x="944" y="261" class="m">party allowlist → denied</text>
+  <text x="944" y="288" class="hs">2 · Target-bound rules</text>
+  <text x="944" y="306" class="m">once / run / standing grants,</text>
+  <text x="944" y="323" class="m">capped by auto_approve_max</text>
+  <text x="944" y="350" class="hs">3 · Otherwise a human</text>
+  <text x="944" y="368" class="m">row in action_requests; step +</text>
+  <text x="944" y="385" class="m">run → awaiting_approval;</text>
+  <text x="944" y="402" class="m">nothing committed, no timer</text>
+  <text x="944" y="430" class="hs">Decide (step 5)</text>
+  <text x="944" y="448" class="m">admin / reviewer; optional four-</text>
+  <text x="944" y="465" class="m">eyes · UPDATE … WHERE status =</text>
+  <text x="944" y="482" class="m">'pending' → resolves exactly once</text>
+  <text x="944" y="510" class="hs">Resume</text>
+  <text x="944" y="528" class="m">last decision → running → same</text>
+  <text x="944" y="545" class="m">runWorkflow; action_key makes</text>
+  <text x="944" y="562" class="m">re-entry duplicate-free</text>
+
+  <!-- edges between columns -->
+  <path class="edge" d="M270 295 H288"/>
+  <path class="edge" d="M789 322 H928"/>
+  <text x="860" y="314" text-anchor="middle" class="lbl">proposed actions</text>
+
+  <!-- Bottom: Supabase -->
+  <rect x="40" y="620" width="870" height="128" rx="12" fill="#ecfdf5" stroke="#3ECF8E" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="56" y="644" class="h">Supabase Postgres + Storage (service-role writes, org-scoped)</text>
+  <rect x="56" y="656" width="80" height="26" rx="6" class="chip"/><text x="96" y="674" text-anchor="middle" class="n">workflows</text>
+  <rect x="146" y="656" width="110" height="26" rx="6" class="chip"/><text x="201" y="674" text-anchor="middle" class="n">workflow_files</text>
+  <rect x="266" y="656" width="116" height="26" rx="6" class="chip"/><text x="324" y="674" text-anchor="middle" class="n">workflow_steps</text>
+  <rect x="392" y="656" width="80" height="26" rx="6" class="chip"/><text x="432" y="674" text-anchor="middle" class="n">audit_log</text>
+  <rect x="482" y="656" width="122" height="26" rx="6" class="chip"/><text x="543" y="674" text-anchor="middle" class="n">action_requests</text>
+  <rect x="614" y="656" width="114" height="26" rx="6" class="chip"/><text x="671" y="674" text-anchor="middle" class="n">approval_rules</text>
+  <rect x="738" y="656" width="160" height="26" rx="6" class="chip"/><text x="818" y="674" text-anchor="middle" class="n">org_approval_policies</text>
+  <rect x="56" y="692" width="128" height="26" rx="6" class="chip"/><text x="120" y="710" text-anchor="middle" class="n">review_decisions</text>
+  <rect x="194" y="692" width="176" height="26" rx="6" class="chip"/><text x="282" y="710" text-anchor="middle" class="n">bucket: workflow-files</text>
+  <text x="384" y="710" class="m">reads: org_model_configs · workflow_step_configs · org_role_configs</text>
+  <text x="56" y="738" class="m">workflow_steps = status, output, provider:model, input hash · audit_log = proposed → decided → committed / withheld chain</text>
+
+  <!-- Bottom right: LLM -->
+  <rect x="930" y="620" width="230" height="128" rx="12" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="944" y="644" class="h">LLM provider</text>
+  <text x="944" y="666" class="m">resolved per org / step / role</text>
+  <text x="944" y="686" class="m">Fireworks default; Anthropic,</text>
+  <text x="944" y="704" class="m">OpenAI, Gemini, Ollama, custom</text>
+  <text x="944" y="724" class="m">HTTPS · key decrypted in-process</text>
+
+  <path class="edge" d="M560 582 V618"/>
+  <text x="570" y="604" class="lbl">step rows · audit events</text>
+  <path class="edge" d="M860 582 V602 H1045 V618"/>
+  <text x="952" y="594" text-anchor="middle" class="lbl">ctx.llm</text>
+</svg>

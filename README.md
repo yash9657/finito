@@ -8,6 +8,131 @@ Built with Next.js 15 (App Router), React 19, Tailwind v4 (dark-only), Supabase
 (Postgres + Auth + Storage), and a provider-neutral model layer with native Fireworks support. See
 [`PLAN.md`](./PLAN.md) for the full product/architecture spec.
 
+## Architecture
+
+**Live:** <https://finfloww.xyz> (`www` → apex, 308) · **Hosting:** Vercel project `finflow`, deploying `main` of `yash9657/finito` · **Data/auth:** Supabase project `finito` (`lveaycbnqnphgbszrogn`) · **DNS:** Namecheap registrar, Vercel DNS.
+
+| Diagram | Shows |
+| --- | --- |
+| [System context](./docs/architecture/system-context.svg) | Users, the Next.js app on Vercel, Supabase services, LLM providers, GitHub delivery |
+| [Deployment & request path](./docs/architecture/deployment.svg) | Edge → functions → Supabase topology, auth flow, key placement, numbered request path |
+| [Pipeline workflows](./docs/architecture/workflow-pipeline.svg) | API sequence, the three DAGs, the authorization gate, tables written |
+| [Investigations & memory](./docs/architecture/investigation-agent.svg) | Data library ingest, the bounded agent loop and tools, the append-only event stream |
+
+![Finflow system context](./docs/architecture/system-context.svg)
+
+### Context and goals
+
+Finflow runs recurring finance work — bank reconciliation, invoice-to-PO matching, budget-vs-actual commentary — and open-ended questions over uploaded files. The architecture optimises for, in order: **(1) evidence** (every figure traceable to a source row, every step and decision recorded), **(2) control** (the model may judge and explain, but code computes money and people authorise consequential actions), **(3) low operating cost** for a single-operator pilot. It is explicitly *pilot* software; see [production readiness](./docs/PRODUCTION_READINESS.md) for the gates before onboarding an organisation.
+
+### Components
+
+| Component | Where | Responsibility |
+| --- | --- | --- |
+| Edge middleware (`middleware.ts`) | Vercel Edge | Refresh the Supabase session cookie on every request; redirect anonymous page requests to `/login`, return 401/503 for `/api/*` |
+| Pages (`app/(app)/*`, `app/(auth)/login`) | Vercel functions (RSC) + browser | Dashboard, workflow wizard/live view/report, data library, investigations, settings (models, approvals, memory) |
+| Route handlers (`app/api/**`, 25 routes) | Vercel functions (Node) | Validate with zod, authenticate via `requireOrgAccess`/`requireWorkflowAccess` (`lib/api/guard.ts`), then read/write with the service-role client scoped by `org_id` |
+| DAG orchestrator (`lib/agents/`) | Same function, after the response, via `waitUntil` | Run reconciliation / AP / FP&A graphs: ready-set concurrency, 3 retries, resumable, authorization gate |
+| Investigator agent (`lib/harness/agent/`) | Same, via `waitUntil` | Bounded tool-calling loop over workflow data, uploaded sources and memory; read-only except proposals |
+| Event stream (`lib/harness/events.ts`) | Postgres `harness_events` | Sole writer of the append-only, gaplessly sequenced run history; streamed to the browser over Realtime |
+| Approvals engine (`lib/approvals/`) | Library | Pure ceilings → rules → human decision for `moves_money` actions; persists `action_requests` |
+| LLM router (`lib/llm/`) | Library | Resolve provider per step/role/org (Fireworks default; Anthropic, OpenAI, Gemini, Ollama, custom); decrypt the org key in-process; structured output + tool calling |
+| QuickJS sandbox (`lib/harness/agent/sandbox/`) | `worker_threads` in the function | Execute model-written JavaScript with no fs/network, 32 MiB heap, 1.5 s interrupt, 5 s hard kill, 2 concurrent per instance |
+| Supabase Auth | Supabase | Email + password, JWT access/refresh tokens in `@supabase/ssr` cookies; `site_url` = `https://finfloww.xyz` |
+| Supabase Postgres | Supabase | 20 tables, RLS everywhere, security-definer RPCs for atomic writes, `tsvector` + GIN full-text memory search, interaction-ledger triggers |
+| Supabase Storage | Supabase | Private buckets `workflow-files` (service role only) and `analysis-sources` (20 MiB cap, org-scoped read) |
+| Supabase Realtime | Supabase | `postgres_changes` on `harness_events` and `investigations` to the investigation view |
+| GitHub Actions | GitHub | `quality.yml` (typecheck, lint, test, build on PR/main); `supabase-migrations.yml` (`supabase db push` on merge to `main`) |
+
+There are no Supabase Edge Functions, cron jobs or queues: all server code is the Next.js app.
+
+### Request and data flow
+
+![Finflow deployment and request path](./docs/architecture/deployment.svg)
+
+1. **Every request** hits Vercel's edge, where middleware refreshes the Supabase session (`auth.getUser()`).
+2. **Sign-in** happens browser → Supabase Auth with the anon key; the session JWT lives in cookies, so server code can read it.
+3. **Route handlers** call `requireOrgAccess`: verify the JWT with Supabase Auth, load `profiles.org_id`, then hand back the **service-role** client. Every subsequent query is explicitly filtered by that `org_id` (and workflow ownership).
+4. **Uploads** go server-side to a private bucket under `org_id/…` (sha256-addressed for workflow inputs) and are recorded by an atomic RPC (`replace_workflow_file`) or a `data_sources` insert with compensating object deletion.
+5. **Long work** (`POST …/run`, `POST /api/investigations`) returns `202` and continues in the same function via `waitUntil` (`maxDuration = 300`; investigations cap their wall clock at 270 s in production).
+6. **Progress** reaches the browser two ways: pipeline workflows poll `GET …/status` every 2 s; investigations subscribe to `harness_events`/`investigations` over Realtime (RLS limits SELECT to the user's org).
+
+**Pipeline workflows** — deterministic parse steps feed LLM-assisted match/flag/commentary steps; the AP `approval_queue` step is `moves_money` and suspends the run (`awaiting_approval`) until each payable invoice is decided. State lives in `workflow_steps` (status, output, `provider:model`, input hash, redacted `llm_raw`) and `audit_log`.
+
+![Finflow pipeline workflows](./docs/architecture/workflow-pipeline.svg)
+
+**Investigations** — sources are parsed into immutable, hashed tables with original row numbers, stored, and indexed into `source_memory_chunks`. The agent loop chooses tools from a closed registry; every turn, call and result is an event in `harness_events` (`caused_by` links each result to its call). Final figures are recomputed in TypeScript from cited rows; `recommend_action` can only queue a proposal through the same approvals gate.
+
+![Finflow investigations and memory](./docs/architecture/investigation-agent.svg)
+
+> **Not in the production path yet:** `lib/harness/loop.ts` and the Mastra-based reconciliation harness (`lib/harness/mastra.ts`, `PostgresStore` when `DATABASE_URL` is set) exist on `main` but are only exercised by `npm run harness-proof` and tests. Production pipeline runs use `lib/agents/orchestrator.ts`, which records to `workflow_steps` + `audit_log`; only investigations write `harness_events`.
+
+### Key design decisions
+
+| Decision | Why | Trade-off accepted |
+| --- | --- | --- |
+| Single Next.js app on Vercel; no separate backend | One deployable, one language, preview URLs for free | Background work is bound to a function's lifetime |
+| `waitUntil` instead of a queue | Zero extra infrastructure; runs suspend at approvals with no held connection | **Not durable**: an instance crash or timeout mid-run leaves a `running` row; recovery is a manual re-POST of `/run`. Durable queue + leases is the #1 production gate |
+| Service-role client in route handlers, RLS as second line | Atomic multi-table writes, uploads and RPCs without granting clients write privileges | Tenant isolation depends on every handler filtering by `org_id`; a missed filter is not caught by RLS. Mitigated by the shared guard and revoked client write grants (migration 006) |
+| Two Supabase clients only (cookie/RLS and admin) | Small, auditable surface (D5) | Pages that need cross-table writes must go through an API route |
+| Deterministic code for money, LLM for judgment | Model output is validated against the dataset; numbers recomputed in code | More code per workflow than a "let the model do it" design |
+| Append-only `harness_events` with DB-allocated sequence | Tamper-evident trail; parallel appends can't race; Realtime for free | Write amplification (one row per event); trail and projections (`investigations`, `workflow_steps`) must be kept consistent |
+| Polling (workflows) vs Realtime (investigations) | Polling is trivially correct behind one hook; Realtime suits fine-grained agent events | Two live-update mechanisms to maintain |
+| Bring-your-own LLM per org, keys AES-256-GCM in Node | No vendor lock-in; plaintext never reaches SQL logs | Rotating `LLM_KEY_ENCRYPTION_SECRET` invalidates every stored key |
+| QuickJS WASM for generated code | No host fs/network/packages, bounded CPU/memory, runs inside the function | JavaScript only; 2 concurrent analyses per instance; not distributed admission control |
+| Postgres full-text memory, not embeddings | No vector store or embedding provider; exact citations | Lexical recall misses paraphrases |
+
+### Failure modes
+
+| Failure | Effect | Behaviour / recovery |
+| --- | --- | --- |
+| Function killed mid-run (crash, 300 s limit) | Workflow stuck in `running`; investigation without a terminal event | Status polling is read-only and cannot detect it; operator re-POSTs `/run` (errored steps reset, complete steps skipped) |
+| LLM provider error / bad JSON | Step fails | Zod-validate + one corrective retry, then 3 step attempts (1 s/4 s); final failure pauses the run as `error`, resumable |
+| No provider configured | Run/investigation refused | Fails fast before any rows are created; UI links to Settings → Models |
+| DB error during provider resolution | — | Fails closed; never falls back to environment credentials |
+| Agent runs away | Bounded | Turn/token/wall-clock/tool-call budgets + loop detection → `agent_terminated`, partial answer labelled |
+| Generated code hangs or bloats | Bounded | 1.5 s interrupt, 5 s worker kill, 32 MiB heap, 24 KiB output |
+| Concurrent approvals / double submit | Safe | `UPDATE … WHERE status='pending'` resolves exactly once; resume is idempotent via `action_key` |
+| Supabase outage | App unusable (auth + data) | No fallback; Vercel serves only the static landing page |
+| Supabase free project paused (inactivity) | All requests fail | Restore from the Supabase dashboard; consider Pro before real users |
+| Migration not yet applied when code deploys | RPC/column errors | Vercel and the migration workflow deploy independently on merge; merge schema-first or in one PR |
+
+### Security
+
+- **Authentication:** Supabase Auth (email + password). Middleware refreshes sessions; every API route re-verifies with `auth.getUser()` (server round-trip, not just cookie decoding).
+- **Authorisation:** org membership via `profiles.org_id`; roles `admin` / `analyst` / `reviewer`. Approving actions needs `admin`/`reviewer`; rules and ceilings are `admin`-only; optional four-eyes (`require_separate_approver`). New sign-ups get a private workspace (migration 008).
+- **RLS:** enabled on every table, scoped by `auth_org_id()`; client write grants revoked (006), so browsers can only `SELECT` their org's rows. `org_model_configs` has no SELECT policy at all. `harness_events` has no UPDATE grant for anyone.
+- **Keys:** `SUPABASE_SERVICE_ROLE_KEY`, `LLM_KEY_ENCRYPTION_SECRET`, `FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY` are server-only Vercel env vars, imported only by `lib/supabase/admin.ts` / the LLM layer. Only `NEXT_PUBLIC_SUPABASE_URL` and the anon key reach the browser. Org LLM keys are AES-256-GCM encrypted in Node, exposed only as `key_last4`, and never logged or written to events.
+- **Model output & generated code:** structured output validated by zod; IDs checked against the dataset; event payloads redacted and capped; generated JS isolated in QuickJS. Optional SSRF guard (`LLM_BLOCK_PRIVATE_URLS=1`) for custom base URLs.
+- **Headers:** `X-Frame-Options: DENY`, `nosniff`, strict referrer, restrictive `Permissions-Policy` (`next.config.ts`). No CSP yet.
+- **Gaps:** no MFA/SSO/SCIM, no rate limiting or WAF rules beyond Vercel defaults, no penetration test, retention/erasure policy undefined.
+
+### Observability
+
+What exists is mostly **domain** observability: `harness_events` (full agent trace with provider/model/token usage), `workflow_steps` + `audit_log` (pipeline provenance and the authorization chain), `interaction_events` (trigger-captured activity ledger), and Settings → Models → Usage (`/api/llm/usage`). **Operational** observability is limited to Vercel function logs (a handful of deliberately terse `console.error` calls that never include payloads or keys) and the Supabase dashboard. There is no tracing, error tracking, alerting or uptime check — and nothing detects a stalled `running` workflow. CI (`quality.yml`) gates typecheck, lint, tests and build.
+
+### Cost
+
+| Item | Plan | Notes |
+| --- | --- | --- |
+| Vercel | Pro (per seat / month) | Functions, edge, previews, DNS; long runs consume function duration |
+| Supabase | Free | 500 MB database / 1 GB storage-class limits; no PITR; pauses after a week of inactivity. Upgrade to Pro before relying on it |
+| LLM inference | Pay-per-token | Fireworks by default; orgs can bring their own keys, which bills them directly |
+| Domain | Namecheap | Annual registration |
+
+The dominant variable cost is inference; budgets per investigation (tokens, turns) are the main cost control.
+
+### Environments
+
+| Environment | App | Database / Auth | Notes |
+| --- | --- | --- | --- |
+| Local | `npm run dev` (Turbopack) on `localhost:3000` | A Supabase project from `.env.local` (`supabase/config.toml` also supports `supabase start`) | Without `waitUntil`, background runs continue in the dev server process; Ollama/localhost providers allowed |
+| Preview | Vercel preview deployment per branch/PR | Whatever Supabase env vars are scoped to Preview — **verify**; if shared with production, previews touch production data | Supabase Auth redirects use `site_url` (production) |
+| Production | `main` → https://finfloww.xyz | Supabase `finito` | Migrations via `supabase-migrations.yml` on merge to `main`; `LLM_ENV_ORG_ID` required for env-key fallback |
+
+**Future option:** the owner's other apps run on a shared AWS platform (Lambda + CloudFront + Aurora Serverless v2). Moving Finflow there is planned for later; the main architectural benefit would be a durable worker/queue for runs, which is the top open gate either way.
+
+
 ---
 
 ## 1. Prerequisites
@@ -313,9 +438,15 @@ app/
   (app)/settings                org + members
   (app)/settings/models         LLM providers, per-step matrix, usage  (Plan 2)
   (app)/settings/approvals      ceilings, counterparty allowlist, standing rules  (Plan 3)
+  (app)/settings/memory         personal preferences, automatic recall toggle
+  (app)/data                    data library (upload, inspect parsed sources)
+  (app)/investigations[/id]     "Ask your data" conversations  (client, Realtime)
   api/workflows/**              create / upload / run / status / review / approvals / report
   api/llm/**                    provider configs / test / step-configs / usage  (Plan 2)
   api/approvals/**              org policy / standing rules (mint + revoke)  (Plan 3)
+  api/data-sources/**           upload / list / delete analysis sources
+  api/investigations/**         start / list / read investigations  (Plan 5)
+  api/memory/**                 search, preferences, events, reindex
 components/workflow/            StepCard, WorkflowTrack, LiveWorkflowView, OutputPanel,
                                 ApprovalPanel, ReviewBanner, FileDropzone, AuditTrail,
                                 PrintButton
@@ -327,6 +458,9 @@ lib/llm/                        provider.ts, router.ts, providers/*, crypto, jso
                                 redact, url-guard, config-service  (Plan 2)
 lib/approvals/                  risk taxonomy, permission engine, service, action-types,
                                 report helpers  (Plan 3)
+lib/harness/                    event stream (events.ts), investigator agent + tools +
+                                QuickJS sandbox (agent/), verifiers, Mastra harness (proof only)
+lib/data/ · lib/memory/         source parsing + storage · durable memory index + search
 lib/supabase/                   server + admin + middleware clients
 lib/{types,format,audit,csv,excel}
 ```
