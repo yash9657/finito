@@ -180,8 +180,8 @@ function toCsv(headers: string[], rows: Record<string, string>[]): string {
 /* RECONCILIATION                                                             */
 /* ========================================================================== */
 
-interface ErpInternal extends ErpTxn {}
-interface BankInternal extends BankTxn {}
+type ErpInternal = ErpTxn;
+type BankInternal = BankTxn;
 
 const erp: ErpInternal[] = [];
 const bank: BankInternal[] = [];

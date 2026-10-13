@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import DemoMount from "@/demo/engine/DemoMount";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,8 +29,6 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
-        {/* The guided demo overlay. Off unless NEXT_PUBLIC_DEMO=1; see demo/README.md. */}
-        {process.env.NEXT_PUBLIC_DEMO === "1" && <DemoMount />}
       </body>
     </html>
   );
