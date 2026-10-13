@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 870" width="1200" height="870" role="img" aria-labelledby="title desc">
+  <title id="title">Finflow deployment and request path</title>
+  <desc id="desc">Production topology: browser to Vercel Edge and Node functions, Supabase Auth, Realtime, Postgres and Storage, LLM providers, and GitHub-driven delivery, with a numbered request path.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <style>
+      text { font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: #0f172a; }
+      .title { font-size: 22px; font-weight: 700; }
+      .sub { font-size: 13px; fill: #475569; }
+      .h { font-size: 14px; font-weight: 700; }
+      .m { font-size: 12px; fill: #475569; }
+      .k { font-size: 12px; fill: #1e293b; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .inv { fill: #ffffff; }
+      .invm { font-size: 12px; fill: #e2e8f0; }
+      .lbl { font-size: 12px; fill: #334155; paint-order: stroke; stroke: #ffffff; stroke-width: 5px; stroke-linejoin: round; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.6; marker-end: url(#arrow); }
+      .badge { fill: #0f172a; }
+      .bt { font-size: 12px; font-weight: 700; fill: #ffffff; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="870" rx="16" fill="#ffffff"/>
+  <text x="40" y="36" class="title">Finflow — deployment &amp; request path</text>
+  <text x="40" y="56" class="sub">Production: https://finfloww.xyz · Vercel project finflow · Supabase project finito</text>
+
+  <!-- Browser -->
+  <rect x="40" y="150" width="170" height="330" rx="10" fill="#f1f5f9" stroke="#334155" stroke-width="1.5"/>
+  <text x="125" y="178" text-anchor="middle" class="h">Browser</text>
+  <text x="125" y="202" text-anchor="middle" class="m">React 19 client</text>
+  <text x="125" y="222" text-anchor="middle" class="m">supabase-js</text>
+  <text x="125" y="240" text-anchor="middle" class="m">(anon key only)</text>
+  <text x="125" y="264" text-anchor="middle" class="m">session JWT in</text>
+  <text x="125" y="282" text-anchor="middle" class="m">@supabase/ssr cookies</text>
+  <text x="125" y="314" text-anchor="middle" class="m">no direct table</text>
+  <text x="125" y="332" text-anchor="middle" class="m">writes or uploads</text>
+
+  <!-- Vercel boundary -->
+  <rect x="240" y="112" width="530" height="470" rx="14" fill="none" stroke="#000000" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="256" y="134" class="h">Vercel · project finflow (Pro)</text>
+  <text x="256" y="152" class="m">main → production · other branches → preview</text>
+
+  <rect x="258" y="168" width="214" height="150" rx="8" fill="#000000"/>
+  <text x="272" y="192" class="h inv">Vercel Edge Network</text>
+  <text x="272" y="214" class="invm">Vercel DNS · TLS · CDN</text>
+  <text x="272" y="233" class="invm">www → apex (308)</text>
+  <text x="272" y="257" class="invm">middleware.ts</text>
+  <text x="272" y="276" class="invm">refreshes Supabase session</text>
+  <text x="272" y="295" class="invm">no session → /login or 401</text>
+
+  <rect x="258" y="334" width="214" height="232" rx="8" fill="#f8fafc" stroke="#64748b"/>
+  <text x="272" y="356" class="h">Environment variables</text>
+  <text x="272" y="378" class="m">server-only</text>
+  <text x="272" y="397" class="k">SUPABASE_SERVICE_ROLE_KEY</text>
+  <text x="272" y="415" class="k">LLM_KEY_ENCRYPTION_SECRET</text>
+  <text x="272" y="433" class="k">FIREWORKS_API_KEY</text>
+  <text x="272" y="451" class="k">LLM_ENV_ORG_ID</text>
+  <text x="272" y="469" class="k">ANTHROPIC_API_KEY (opt.)</text>
+  <text x="272" y="493" class="m">public (shipped in JS bundle)</text>
+  <text x="272" y="512" class="k">NEXT_PUBLIC_SUPABASE_URL</text>
+  <text x="272" y="530" class="k">NEXT_PUBLIC_SUPABASE_</text>
+  <text x="272" y="548" class="k">  ANON_KEY</text>
+
+  <rect x="490" y="168" width="262" height="396" rx="10" fill="#ffffff" stroke="#0f172a" stroke-width="1.5"/>
+  <path d="M500 168 H742 A10 10 0 0 1 752 178 V198 H490 V178 A10 10 0 0 1 500 168 Z" fill="#000000"/>
+  <text x="504" y="189" class="h inv">Vercel Functions · Node.js</text>
+
+  <rect x="504" y="208" width="234" height="50" rx="7" fill="#f8fafc" stroke="#64748b"/>
+  <text x="516" y="228" class="h">Pages (RSC)</text>
+  <text x="516" y="247" class="m">cookie client · RLS-scoped reads</text>
+  <rect x="504" y="266" width="234" height="50" rx="7" fill="#f8fafc" stroke="#64748b"/>
+  <text x="516" y="286" class="h">/api/** route handlers</text>
+  <text x="516" y="305" class="m">zod · requireOrgAccess guard</text>
+  <rect x="504" y="324" width="234" height="50" rx="7" fill="#f8fafc" stroke="#64748b"/>
+  <text x="516" y="344" class="h">Admin client (service role)</text>
+  <text x="516" y="363" class="m">bypasses RLS · explicit org_id</text>
+  <rect x="504" y="382" width="234" height="50" rx="7" fill="#f8fafc" stroke="#64748b"/>
+  <text x="516" y="402" class="h">Background via waitUntil</text>
+  <text x="516" y="421" class="m">maxDuration 300 s · not durable</text>
+  <rect x="504" y="440" width="234" height="50" rx="7" fill="#f8fafc" stroke="#64748b"/>
+  <text x="516" y="460" class="h">LLM router</text>
+  <text x="516" y="479" class="m">decrypts org key (AES-256-GCM)</text>
+  <rect x="504" y="498" width="234" height="50" rx="7" fill="#f8fafc" stroke="#64748b"/>
+  <text x="516" y="518" class="h">QuickJS worker sandbox</text>
+  <text x="516" y="537" class="m">no fs · no network · 32 MiB heap</text>
+
+  <!-- Supabase boundary -->
+  <rect x="800" y="112" width="370" height="470" rx="14" fill="none" stroke="#3ECF8E" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="816" y="134" class="h">Supabase · project finito (free tier)</text>
+  <text x="816" y="152" class="m">ref lveaycbnqnphgbszrogn</text>
+
+  <rect x="818" y="168" width="334" height="78" rx="8" fill="#ecfdf5" stroke="#3ECF8E" stroke-width="1.5"/>
+  <text x="832" y="190" class="h">Supabase Auth</text>
+  <text x="832" y="210" class="m">email + password · JWT access/refresh tokens</text>
+  <text x="832" y="229" class="m">site_url https://finfloww.xyz</text>
+  <rect x="818" y="256" width="334" height="62" rx="8" fill="#ecfdf5" stroke="#3ECF8E" stroke-width="1.5"/>
+  <text x="832" y="278" class="h">Realtime</text>
+  <text x="832" y="298" class="m">harness_events · investigations (RLS SELECT)</text>
+  <rect x="818" y="328" width="334" height="136" rx="8" fill="#ecfdf5" stroke="#3ECF8E" stroke-width="1.5"/>
+  <text x="832" y="350" class="h">Postgres (via PostgREST)</text>
+  <text x="832" y="371" class="m">RLS on every table: org = auth_org_id()</text>
+  <text x="832" y="390" class="m">client write grants revoked (migration 006)</text>
+  <text x="832" y="409" class="m">security-definer RPCs: atomic upload / review,</text>
+  <text x="832" y="428" class="m">append_harness_event (gapless sequence)</text>
+  <text x="832" y="447" class="m">tsvector + GIN indexes for memory search</text>
+  <rect x="818" y="474" width="334" height="90" rx="8" fill="#ecfdf5" stroke="#3ECF8E" stroke-width="1.5"/>
+  <text x="832" y="496" class="h">Storage (private buckets)</text>
+  <text x="832" y="516" class="m">workflow-files: no policies, service role only</text>
+  <text x="832" y="535" class="m">analysis-sources: 20 MiB cap, org-scoped read</text>
+  <text x="832" y="554" class="m">object keys: org_id/… (+ sha256 for uploads)</text>
+
+  <!-- LLM -->
+  <rect x="490" y="628" width="262" height="90" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="504" y="652" class="h">LLM provider APIs</text>
+  <text x="504" y="673" class="m">Fireworks (default) · Anthropic</text>
+  <text x="504" y="691" class="m">OpenAI · Gemini · Ollama / custom</text>
+  <text x="504" y="709" class="m">(per-org config, env fallback)</text>
+
+  <!-- GitHub -->
+  <rect x="800" y="628" width="370" height="140" rx="10" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="816" y="652" class="h">GitHub · yash9657/finito</text>
+  <text x="816" y="674" class="m">push main → Vercel production deployment</text>
+  <text x="816" y="693" class="m">branch / PR → Vercel preview deployment</text>
+  <text x="816" y="712" class="m">quality.yml: typecheck · lint · test · build</text>
+  <text x="816" y="731" class="m">supabase-migrations.yml: supabase db push</text>
+  <text x="816" y="750" class="m">(on merge to main touching supabase/)</text>
+
+  <!-- Numbered key -->
+  <rect x="40" y="628" width="430" height="222" rx="10" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="56" y="652" class="h">Request path</text>
+  <g>
+    <circle cx="66" cy="672" r="9" class="badge"/><text x="66" y="676" text-anchor="middle" class="bt">1</text>
+    <text x="84" y="676" class="m">HTTPS → Vercel Edge; middleware refreshes the session</text>
+    <circle cx="66" cy="694" r="9" class="badge"/><text x="66" y="698" text-anchor="middle" class="bt">2</text>
+    <text x="84" y="698" class="m">Sign-in: supabase-js + anon key → Auth; JWT in cookies</text>
+    <circle cx="66" cy="716" r="9" class="badge"/><text x="66" y="720" text-anchor="middle" class="bt">3</text>
+    <text x="84" y="720" class="m">Edge routes to a Node function (RSC page or /api route)</text>
+    <circle cx="66" cy="738" r="9" class="badge"/><text x="66" y="742" text-anchor="middle" class="bt">4</text>
+    <text x="84" y="742" class="m">Guard: auth.getUser() verifies the JWT → profile.org_id</text>
+    <circle cx="66" cy="760" r="9" class="badge"/><text x="66" y="764" text-anchor="middle" class="bt">5</text>
+    <text x="84" y="764" class="m">Service-role client reads/writes Postgres, filtered by org_id</text>
+    <circle cx="66" cy="782" r="9" class="badge"/><text x="66" y="786" text-anchor="middle" class="bt">6</text>
+    <text x="84" y="786" class="m">Uploads → private bucket, then an atomic RPC records them</text>
+    <circle cx="66" cy="804" r="9" class="badge"/><text x="66" y="808" text-anchor="middle" class="bt">7</text>
+    <text x="84" y="808" class="m">202 returned; waitUntil continues the run → LLM over HTTPS</text>
+    <circle cx="66" cy="826" r="9" class="badge"/><text x="66" y="830" text-anchor="middle" class="bt">8</text>
+    <text x="84" y="830" class="m">Progress: Realtime WSS (questions) · 2 s polling (workflows)</text>
+  </g>
+
+  <!-- Edges -->
+  <!-- 1 browser -> edge -->
+  <path class="edge" d="M210 210 H256"/>
+  <circle cx="232" cy="196" r="9" class="badge"/><text x="232" y="200" text-anchor="middle" class="bt">1</text>
+  <!-- 2 browser -> auth (over the top) -->
+  <path class="edge" d="M170 150 V96 H985 V166"/>
+  <text x="560" y="90" text-anchor="middle" class="lbl">HTTPS sign-in · anon key → session JWT</text>
+  <circle cx="400" cy="96" r="9" class="badge"/><text x="400" y="100" text-anchor="middle" class="bt">2</text>
+  <!-- 3 edge -> functions -->
+  <path class="edge" d="M472 236 H488"/>
+  <circle cx="481" cy="220" r="9" class="badge"/><text x="481" y="224" text-anchor="middle" class="bt">3</text>
+  <!-- 4 functions -> auth -->
+  <path class="edge" d="M752 214 H816"/>
+  <circle cx="776" cy="200" r="9" class="badge"/><text x="776" y="204" text-anchor="middle" class="bt">4</text>
+  <!-- 5 functions -> postgres -->
+  <path class="edge" d="M752 349 H816"/>
+  <circle cx="776" cy="335" r="9" class="badge"/><text x="776" y="339" text-anchor="middle" class="bt">5</text>
+  <!-- 6 functions -> storage -->
+  <path class="edge" d="M752 519 H816"/>
+  <circle cx="776" cy="505" r="9" class="badge"/><text x="776" y="509" text-anchor="middle" class="bt">6</text>
+  <!-- 7 functions -> LLM -->
+  <path class="edge" d="M621 564 V626"/>
+  <circle cx="605" cy="596" r="9" class="badge"/><text x="605" y="600" text-anchor="middle" class="bt">7</text>
+  <text x="634" y="600" class="lbl">HTTPS</text>
+  <!-- 8 realtime -> browser -->
+  <path class="edge" d="M1152 287 H1182 V72 H100 V148"/>
+  <text x="1170" y="66" text-anchor="end" class="lbl">WSS postgres_changes (RLS-filtered)</text>
+  <circle cx="1182" cy="200" r="9" class="badge"/><text x="1182" y="204" text-anchor="middle" class="bt">8</text>
+  <!-- delivery -->
+  <path class="edge" d="M985 628 V584"/>
+  <text x="995" y="610" class="lbl">migrations</text>
+  <path class="edge" d="M800 660 H782 V584"/>
+</svg>
