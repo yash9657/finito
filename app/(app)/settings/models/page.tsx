@@ -1,10 +1,8 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getCurrentProfile } from "@/lib/auth";
 import ModelsManager from "@/components/settings/ModelsManager";
 import { llmStepsForMatrix } from "@/lib/agents/dag";
-import type { Profile } from "@/lib/types";
 
 /**
  * Settings → Models (Plan 2 §6) — server shell. Resolves the caller's role (to gate the
@@ -12,21 +10,7 @@ import type { Profile } from "@/lib/types";
  * list generated from dag.ts. All config data is fetched client-side from /api/llm/*.
  */
 export default async function ModelsSettingsPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  let isAdmin = false;
-  if (user) {
-    const admin = createAdminClient();
-    const { data: profile } = await admin
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .maybeSingle<Pick<Profile, "role">>();
-    isAdmin = profile?.role === "admin";
-  }
+  const isAdmin = (await getCurrentProfile())?.role === "admin";
 
   const llmSteps = llmStepsForMatrix();
 

@@ -11,9 +11,8 @@ declare
   workflow uuid := gen_random_uuid();
   hits jsonb;
 begin
-  insert into auth.users(id,email) values(actor,actor::text||'@example.invalid'),(outsider,outsider::text||'@example.invalid');
-  select org_id into org from public.profiles where id=actor;
-  select org_id into other_org from public.profiles where id=outsider;
+  select id,org_id into actor,org from public.provision_clerk_profile('user_'||actor::text,actor::text||'@example.invalid');
+  select id,org_id into outsider,other_org from public.provision_clerk_profile('user_'||outsider::text,outsider::text||'@example.invalid');
   insert into public.data_sources(id,org_id,filename,sha256,format,byte_size,storage_path,manifest)
     values(source,org,'helios-close_2026.05.csv',repeat('a',64),'csv',12,org::text||'/'||source::text||'/source','{"tables":[{"id":"t0","name":"Sheet 1","columns":["Owner"]}]}');
   perform public.replace_source_memory_chunks(org,source,'[{"chunk_no":0,"table_id":"t0","original_row":9,"row_kind":"data","content":"Maya"}]');

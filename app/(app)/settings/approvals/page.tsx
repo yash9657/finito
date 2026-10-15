@@ -1,9 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getCurrentProfile } from "@/lib/auth";
 import ApprovalsManager from "@/components/settings/ApprovalsManager";
-import type { Profile } from "@/lib/types";
 
 /**
  * Settings → Approvals (Plan 3 §6) — server shell. Resolves the caller's role to gate the
@@ -11,21 +9,7 @@ import type { Profile } from "@/lib/types";
  * fetched client-side from /api/approvals/*.
  */
 export default async function ApprovalsSettingsPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  let isAdmin = false;
-  if (user) {
-    const admin = createAdminClient();
-    const { data: profile } = await admin
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .maybeSingle<Pick<Profile, "role">>();
-    isAdmin = profile?.role === "admin";
-  }
+  const isAdmin = (await getCurrentProfile())?.role === "admin";
 
   return (
     <div className="page-container min-w-0">
