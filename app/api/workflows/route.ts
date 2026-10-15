@@ -1,16 +1,16 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentProfile } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { writeAudit } from "@/lib/audit";
 import { jsonError } from "@/lib/api/guard";
-import { workflowTypeEnum, type Profile, type Workflow, type WorkflowType } from "@/lib/types";
+import { workflowTypeEnum, type Workflow, type WorkflowType } from "@/lib/types";
 
 /**
  * POST /api/workflows — create a new workflow (§10).
  *
- * Body: `{ type, name? }`. Auth resolves the caller's profile via the cookie-scoped
- * server client; the row is inserted (status `idle`) via the admin client in the
+ * Body: `{ type, name? }`. Auth resolves the caller's profile from the Clerk
+ * session; the row is inserted (status `idle`) via the admin client in the
  * caller's org; a `workflow_created` audit row is written. → 201 `{ id }`.
  */
 
@@ -36,13 +36,9 @@ function defaultName(type: WorkflowType): string {
 }
 
 export async function POST(req: NextRequest) {
-  // 1. Auth via cookie-scoped server client.
-  const supabase = await createClient();
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-  if (userError || !user) {
+  // 1. Auth: the Clerk user's profile (org_id).
+  const profile = await getCurrentProfile();
+  if (!profile) {
     return jsonError("Not authenticated", 401);
   }
 
@@ -60,18 +56,9 @@ export async function POST(req: NextRequest) {
   const { type } = parsed.data;
   const name = parsed.data.name ?? defaultName(type);
 
-  // 3. Load caller profile (org_id) via admin client.
   const admin = createAdminClient();
-  const { data: profile, error: profileError } = await admin
-    .from("profiles")
-    .select("*")
-    .eq("id", user.id)
-    .maybeSingle<Profile>();
-  if (profileError || !profile) {
-    return jsonError("Profile not found", 401);
-  }
 
-  // 4. Insert the workflow row (status `idle`) in the caller's org.
+  // 3. Insert the workflow row (status `idle`) in the caller's org.
   const { data: workflow, error: insertError } = await admin
     .from("workflows")
     .insert({
@@ -87,7 +74,7 @@ export async function POST(req: NextRequest) {
     return jsonError("Failed to create workflow", 500);
   }
 
-  // 5. Audit.
+  // 4. Audit.
   await writeAudit(admin, {
     workflowId: workflow.id,
     actorType: "human",

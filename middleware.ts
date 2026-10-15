@@ -1,9 +1,18 @@
-import { type NextRequest } from "next/server";
-import { updateSession } from "@/lib/supabase/middleware";
+import { NextResponse } from "next/server";
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-export async function middleware(request: NextRequest) {
-  return updateSession(request);
-}
+// Marketing and the Clerk sign-in/sign-up pages. API routes also have JSON auth guards.
+const isPublicRoute = createRouteMatcher(["/", "/login(.*)", "/sign-up(.*)"]);
+
+export default clerkMiddleware(async (auth, request) => {
+  if (isPublicRoute(request)) return;
+  const { userId } = await auth();
+  if (userId) return;
+  if (request.nextUrl.pathname.startsWith("/api/")) {
+    return NextResponse.json({ error: "Session expired. Sign in again." }, { status: 401 });
+  }
+  return NextResponse.redirect(new URL("/login", request.url));
+});
 
 export const config = {
   matcher: [
@@ -13,7 +22,6 @@ export const config = {
      * - _next/image (image optimization files)
      * - favicon.ico (favicon file)
      * - image asset extensions
-     * Feel free to modify this pattern to include more paths.
      */
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],

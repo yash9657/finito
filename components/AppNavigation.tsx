@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { SignOutButton } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
@@ -34,11 +35,9 @@ const management = [
 export function AppNavigation({
   email,
   organization,
-  signOut,
 }: {
   email: string;
   organization: string;
-  signOut: () => Promise<void>;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -123,15 +122,15 @@ export function AppNavigation({
           <p className="truncate px-2 text-xs text-muted" title={email}>
             {email}
           </p>
-          <form action={signOut}>
+          <SignOutButton redirectUrl="/login">
             <button
-              type="submit"
+              type="button"
               className="mt-2 flex min-h-11 w-full items-center gap-3 rounded-md px-2 text-xs text-muted hover:bg-card-hover hover:text-foreground"
             >
               <LogOut size={15} />
               Sign out
             </button>
-          </form>
+          </SignOutButton>
         </div>
       </aside>
     </>

@@ -1,17 +1,11 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { LogOut, Cpu, ShieldCheck, BookOpen, ChevronRight } from "lucide-react";
+import { SignOutButton } from "@clerk/nextjs";
 import { createClient } from "@/lib/supabase/server";
+import { getCurrentProfile } from "@/lib/auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { Organization, Profile, ProfileRole } from "@/lib/types";
-
-async function signOut() {
-  "use server";
-  const supabase = await createClient();
-  await supabase.auth.signOut();
-  redirect("/login");
-}
 
 const ROLE_VARIANT: Record<ProfileRole, "accent" | "warning" | "muted"> = {
   admin: "accent",
@@ -21,9 +15,7 @@ const ROLE_VARIANT: Record<ProfileRole, "accent" | "warning" | "muted"> = {
 
 export default async function SettingsPage() {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const profile = await getCurrentProfile();
 
   // RLS scopes both reads to the caller's org.
   const [
@@ -156,7 +148,7 @@ export default async function SettingsPage() {
               >
                 <p className="min-w-0 break-all text-sm">
                   {m.email}
-                  {m.id === user?.id && (
+                  {m.id === profile?.id && (
                     <span className="ml-2 text-muted">(you)</span>
                   )}
                 </p>
@@ -172,12 +164,12 @@ export default async function SettingsPage() {
         )}
       </section>
 
-      <form action={signOut}>
-        <Button type="submit" variant="outline">
+      <SignOutButton redirectUrl="/login">
+        <Button variant="outline">
           <LogOut aria-hidden="true" className="h-4 w-4" />
           Sign out
         </Button>
-      </form>
+      </SignOutButton>
     </div>
   );
 }
