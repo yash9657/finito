@@ -4,13 +4,13 @@ Finance workflows for reconciliation, invoice review, variance analysis, and con
 
 **Deployment status:** strengthened pilot software, not established enterprise readiness. Read [production readiness](./docs/PRODUCTION_READINESS.md) before onboarding an organization.
 
-Built with Next.js 15 (App Router), React 19, Tailwind v4 (dark-only), Supabase
-(Postgres + Auth + Storage), and a provider-neutral model layer with native Fireworks support. See
+Built with Next.js 15 (App Router), React 19, Tailwind v4 (dark-only), Clerk (sign-in), Supabase
+(Postgres + Storage + Realtime), and a provider-neutral model layer with native Fireworks support. See
 [`PLAN.md`](./PLAN.md) for the full product/architecture spec.
 
 ## Architecture
 
-**Live:** <https://finfloww.xyz> (`www` → apex, 308) · **Hosting:** Vercel project `finflow`, deploying `main` of `yash9657/finito` · **Data/auth:** Supabase project `finito` (`lveaycbnqnphgbszrogn`) · **DNS:** Namecheap registrar, Vercel DNS.
+**Live:** <https://finfloww.xyz> (`www` → apex, 308) · **Hosting:** Vercel project `finflow`, deploying `main` of `yash9657/finito` · **Auth:** Clerk (frontend API at `clerk.finfloww.xyz`) · **Data:** Supabase project `finito` (`lveaycbnqnphgbszrogn`) · **DNS:** Namecheap registrar, Vercel DNS.
 
 | Diagram | Shows |
 | --- | --- |
@@ -29,8 +29,8 @@ Finflow runs recurring finance work — bank reconciliation, invoice-to-PO match
 
 | Component | Where | Responsibility |
 | --- | --- | --- |
-| Edge middleware (`middleware.ts`) | Vercel Edge | Refresh the Supabase session cookie on every request; redirect anonymous page requests to `/login`, return 401/503 for `/api/*` |
-| Pages (`app/(app)/*`, `app/(auth)/login`) | Vercel functions (RSC) + browser | Dashboard, workflow wizard/live view/report, data library, investigations, settings (models, approvals, memory) |
+| Edge middleware (`middleware.ts`) | Vercel Edge | `clerkMiddleware` checks the Clerk session on every request; `/`, `/login` and `/sign-up` are public; redirect anonymous page requests to `/login`, return 401 for `/api/*` |
+| Pages (`app/(app)/*`, `app/(auth)/login`, `app/(auth)/sign-up`) | Vercel functions (RSC) + browser | Dashboard, workflow wizard/live view/report, data library, investigations, settings (models, approvals, memory) |
 | Route handlers (`app/api/**`, 25 routes) | Vercel functions (Node) | Validate with zod, authenticate via `requireOrgAccess`/`requireWorkflowAccess` (`lib/api/guard.ts`), then read/write with the service-role client scoped by `org_id` |
 | DAG orchestrator (`lib/agents/`) | Same function, after the response, via `waitUntil` | Run reconciliation / AP / FP&A graphs: ready-set concurrency, 3 retries, resumable, authorization gate |
 | Investigator agent (`lib/harness/agent/`) | Same, via `waitUntil` | Bounded tool-calling loop over workflow data, uploaded sources and memory; read-only except proposals |
@@ -38,7 +38,7 @@ Finflow runs recurring finance work — bank reconciliation, invoice-to-PO match
 | Approvals engine (`lib/approvals/`) | Library | Pure ceilings → rules → human decision for `moves_money` actions; persists `action_requests` |
 | LLM router (`lib/llm/`) | Library | Resolve provider per step/role/org (Fireworks default; Anthropic, OpenAI, Gemini, Ollama, custom); decrypt the org key in-process; structured output + tool calling |
 | QuickJS sandbox (`lib/harness/agent/sandbox/`) | `worker_threads` in the function | Execute model-written JavaScript with no fs/network, 32 MiB heap, 1.5 s interrupt, 5 s hard kill, 2 concurrent per instance |
-| Supabase Auth | Supabase | Email + password, JWT access/refresh tokens in `@supabase/ssr` cookies; `site_url` = `https://finfloww.xyz` |
+| Clerk | Clerk | Identity: Clerk `SignIn`/`SignUp` at `/login` and `/sign-up`, sessions read server-side with `@clerk/nextjs` `auth()`; frontend API at `clerk.finfloww.xyz`. Supabase accepts Clerk session tokens as third-party auth |
 | Supabase Postgres | Supabase | 20 tables, RLS everywhere, security-definer RPCs for atomic writes, `tsvector` + GIN full-text memory search, interaction-ledger triggers |
 | Supabase Storage | Supabase | Private buckets `workflow-files` (service role only) and `analysis-sources` (20 MiB cap, org-scoped read) |
 | Supabase Realtime | Supabase | `postgres_changes` on `harness_events` and `investigations` to the investigation view |
@@ -50,9 +50,9 @@ There are no Supabase Edge Functions, cron jobs or queues: all server code is th
 
 ![Finflow deployment and request path](./docs/architecture/deployment.svg)
 
-1. **Every request** hits Vercel's edge, where middleware refreshes the Supabase session (`auth.getUser()`).
-2. **Sign-in** happens browser → Supabase Auth with the anon key; the session JWT lives in cookies, so server code can read it.
-3. **Route handlers** call `requireOrgAccess`: verify the JWT with Supabase Auth, load `profiles.org_id`, then hand back the **service-role** client. Every subsequent query is explicitly filtered by that `org_id` (and workflow ownership).
+1. **Every request** hits Vercel's edge, where `clerkMiddleware` checks the Clerk session; anonymous page requests redirect to `/login`, anonymous `/api/*` calls get 401.
+2. **Sign-in** happens browser → Clerk. Server code reads the session with `@clerk/nextjs` `auth()`. The RLS-scoped server client and the browser Realtime client send the Clerk session token to Supabase, which accepts it as third-party auth, so RLS still scopes their reads.
+3. **Route handlers** call `requireOrgAccess`: resolve the Clerk user with `getCurrentProfile()` (`lib/auth.ts`), load their `profiles` row (`org_id`, role) by `clerk_user_id` — provisioned on first sign-in by the `provision_clerk_profile` RPC — then hand back the **service-role** client. Every subsequent query is explicitly filtered by that `org_id` (and workflow ownership).
 4. **Uploads** go server-side to a private bucket under `org_id/…` (sha256-addressed for workflow inputs) and are recorded by an atomic RPC (`replace_workflow_file`) or a `data_sources` insert with compensating object deletion.
 5. **Long work** (`POST …/run`, `POST /api/investigations`) returns `202` and continues in the same function via `waitUntil` (`maxDuration = 300`; investigations cap their wall clock at 270 s in production).
 6. **Progress** reaches the browser two ways: pipeline workflows poll `GET …/status` every 2 s; investigations subscribe to `harness_events`/`investigations` over Realtime (RLS limits SELECT to the user's org).
@@ -74,7 +74,7 @@ There are no Supabase Edge Functions, cron jobs or queues: all server code is th
 | Single Next.js app on Vercel; no separate backend | One deployable, one language, preview URLs for free | Background work is bound to a function's lifetime |
 | `waitUntil` instead of a queue | Zero extra infrastructure; runs suspend at approvals with no held connection | **Not durable**: an instance crash or timeout mid-run leaves a `running` row; recovery is a manual re-POST of `/run`. Durable queue + leases is the #1 production gate |
 | Service-role client in route handlers, RLS as second line | Atomic multi-table writes, uploads and RPCs without granting clients write privileges | Tenant isolation depends on every handler filtering by `org_id`; a missed filter is not caught by RLS. Mitigated by the shared guard and revoked client write grants (migration 006) |
-| Two Supabase clients only (cookie/RLS and admin) | Small, auditable surface (D5) | Pages that need cross-table writes must go through an API route |
+| Two Supabase clients only (Clerk-token/RLS and admin) | Small, auditable surface (D5) | Pages that need cross-table writes must go through an API route |
 | Deterministic code for money, LLM for judgment | Model output is validated against the dataset; numbers recomputed in code | More code per workflow than a "let the model do it" design |
 | Append-only `harness_events` with DB-allocated sequence | Tamper-evident trail; parallel appends can't race; Realtime for free | Write amplification (one row per event); trail and projections (`investigations`, `workflow_steps`) must be kept consistent |
 | Polling (workflows) vs Realtime (investigations) | Polling is trivially correct behind one hook; Realtime suits fine-grained agent events | Two live-update mechanisms to maintain |
@@ -93,16 +93,16 @@ There are no Supabase Edge Functions, cron jobs or queues: all server code is th
 | Agent runs away | Bounded | Turn/token/wall-clock/tool-call budgets + loop detection → `agent_terminated`, partial answer labelled |
 | Generated code hangs or bloats | Bounded | 1.5 s interrupt, 5 s worker kill, 32 MiB heap, 24 KiB output |
 | Concurrent approvals / double submit | Safe | `UPDATE … WHERE status='pending'` resolves exactly once; resume is idempotent via `action_key` |
-| Supabase outage | App unusable (auth + data) | No fallback; Vercel serves only the static landing page |
+| Supabase outage | App unusable (profiles + data) | No fallback; Vercel serves only the static landing page |
 | Supabase free project paused (inactivity) | All requests fail | Restore from the Supabase dashboard; consider Pro before real users |
 | Migration not yet applied when code deploys | RPC/column errors | Vercel and the migration workflow deploy independently on merge; merge schema-first or in one PR |
 
 ### Security
 
-- **Authentication:** Supabase Auth (email + password). Middleware refreshes sessions; every API route re-verifies with `auth.getUser()` (server round-trip, not just cookie decoding).
-- **Authorisation:** org membership via `profiles.org_id`; roles `admin` / `analyst` / `reviewer`. Approving actions needs `admin`/`reviewer`; rules and ceilings are `admin`-only; optional four-eyes (`require_separate_approver`). New sign-ups get a private workspace (migration 008).
-- **RLS:** enabled on every table, scoped by `auth_org_id()`; client write grants revoked (006), so browsers can only `SELECT` their org's rows. `org_model_configs` has no SELECT policy at all. `harness_events` has no UPDATE grant for anyone.
-- **Keys:** `SUPABASE_SERVICE_ROLE_KEY`, `LLM_KEY_ENCRYPTION_SECRET`, `FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY` are server-only Vercel env vars, imported only by `lib/supabase/admin.ts` / the LLM layer. Only `NEXT_PUBLIC_SUPABASE_URL` and the anon key reach the browser. Org LLM keys are AES-256-GCM encrypted in Node, exposed only as `key_last4`, and never logged or written to events.
+- **Authentication:** Clerk. `clerkMiddleware` gates every non-public route; every API route resolves the caller server-side with `@clerk/nextjs` `auth()` and loads their profile by `profiles.clerk_user_id`.
+- **Authorisation:** org membership via `profiles.org_id`; roles `admin` / `analyst` / `reviewer`. Approving actions needs `admin`/`reviewer`; rules and ceilings are `admin`-only; optional four-eyes (`require_separate_approver`). Org and role live in Supabase `profiles`, not Clerk. A new Clerk user's first request claims an existing profile with the same Clerk-verified email or creates a private workspace (`provision_clerk_profile`, migration 019).
+- **RLS:** enabled on every table, scoped by `auth_org_id()`, which maps the Clerk token's `sub` to a profile via `clerk_user_id` (019); client write grants revoked (006), so browsers can only `SELECT` their org's rows. `org_model_configs` has no SELECT policy at all. `harness_events` has no UPDATE grant for anyone.
+- **Keys:** `SUPABASE_SERVICE_ROLE_KEY`, `CLERK_SECRET_KEY`, `LLM_KEY_ENCRYPTION_SECRET`, `FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY` are server-only Vercel env vars, imported only by `lib/supabase/admin.ts` / the LLM layer. Only `NEXT_PUBLIC_SUPABASE_URL`, the anon key and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` reach the browser. Org LLM keys are AES-256-GCM encrypted in Node, exposed only as `key_last4`, and never logged or written to events.
 - **Model output & generated code:** structured output validated by zod; IDs checked against the dataset; event payloads redacted and capped; generated JS isolated in QuickJS. Optional SSRF guard (`LLM_BLOCK_PRIVATE_URLS=1`) for custom base URLs.
 - **Headers:** `X-Frame-Options: DENY`, `nosniff`, strict referrer, restrictive `Permissions-Policy` (`next.config.ts`). No CSP yet.
 - **Gaps:** no MFA/SSO/SCIM, no rate limiting or WAF rules beyond Vercel defaults, no penetration test, retention/erasure policy undefined.
@@ -126,8 +126,8 @@ The dominant variable cost is inference; budgets per investigation (tokens, turn
 
 | Environment | App | Database / Auth | Notes |
 | --- | --- | --- | --- |
-| Local | `npm run dev` (Turbopack) on `localhost:3000` | A Supabase project from `.env.local` (`supabase/config.toml` also supports `supabase start`) | Without `waitUntil`, background runs continue in the dev server process; Ollama/localhost providers allowed |
-| Preview | Vercel preview deployment per branch/PR | Whatever Supabase env vars are scoped to Preview — **verify**; if shared with production, previews touch production data | Supabase Auth redirects use `site_url` (production) |
+| Local | `npm run dev` (Turbopack) on `localhost:3000` | A Supabase project and Clerk instance from `.env.local` (`supabase/config.toml` also supports `supabase start`) | Without `waitUntil`, background runs continue in the dev server process; Ollama/localhost providers allowed |
+| Preview | Vercel preview deployment per branch/PR | Whatever Supabase env vars are scoped to Preview — **verify**; if shared with production, previews touch production data | Likewise verify which Clerk keys are scoped to Preview |
 | Production | `main` → https://finfloww.xyz | Supabase `finito` | Migrations via `supabase-migrations.yml` on merge to `main`; `LLM_ENV_ORG_ID` required for env-key fallback |
 
 **Future option:** the owner's other apps run on a shared AWS platform (Lambda + CloudFront + Aurora Serverless v2). Moving Finflow there is planned for later; the main architectural benefit would be a durable worker/queue for runs, which is the top open gate either way.
@@ -138,7 +138,8 @@ The dominant variable cost is inference; budgets per investigation (tokens, turn
 ## 1. Prerequisites
 
 - Node.js 22+ (required by the PDF reader)
-- A [Supabase](https://supabase.com) project (Postgres + Auth + Storage)
+- A [Supabase](https://supabase.com) project (Postgres + Storage + Realtime)
+- A [Clerk](https://clerk.com) application, trusted by the Supabase project under Authentication → Third-party auth → Clerk
 - A [Fireworks API key](https://fireworks.ai), or a supported alternative provider
 
 ## 2. Environment variables (§2)
@@ -151,8 +152,10 @@ cp .env.example .env.local
 
 ```
 NEXT_PUBLIC_SUPABASE_URL=        # your Supabase project URL
-NEXT_PUBLIC_SUPABASE_ANON_KEY=   # Supabase anon/public key (browser auth)
+NEXT_PUBLIC_SUPABASE_ANON_KEY=   # Supabase anon/public key (RLS-scoped reads)
 SUPABASE_SERVICE_ROLE_KEY=       # server-only; never expose to the client
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY= # Clerk publishable key (sign-in UI)
+CLERK_SECRET_KEY=                # server-only Clerk secret
 LLM_KEY_ENCRYPTION_SECRET=       # required to SAVE provider API keys (AES-256-GCM, D-P2)
 LLM_BLOCK_PRIVATE_URLS=          # OPTIONAL SSRF guard for custom base_urls (D-P13)
 FIREWORKS_API_KEY=               # server-only open-weight model access
@@ -162,7 +165,7 @@ LLM_ENV_ORG_ID=                  # required in production to scope env credentia
 ANTHROPIC_API_KEY=               # optional fallback if Fireworks is absent
 ```
 
-`.env.local` is gitignored. The two `NEXT_PUBLIC_*` values are safe in the
+`.env.local` is gitignored. The `NEXT_PUBLIC_*` values are safe in the
 browser; every other value is used only in server code (API route handlers + the
 orchestrator) and must never be sent to the client.
 
@@ -181,7 +184,7 @@ orchestrator) and must never be sent to the client.
 
 ## 3. Apply the database schema
 
-Apply all migration files **001 through 018 in order**. For an existing installation apply only unapplied versions. The first three establish the baseline:
+Apply all migration files **001 through 019 in order**. For an existing installation apply only unapplied versions. The first three establish the baseline:
 
 1. [`001_init.sql`](./supabase/migrations/001_init.sql) — tables, RLS policies, the
    `profiles` auto-provision trigger, the seeded "Demo Org", and the private
@@ -195,7 +198,7 @@ Apply all migration files **001 through 018 in order**. For an existing installa
 
 Migrations 004–007 add harness events, role routing, client grant restrictions, and investigations. Migration 008 adds Fireworks, tenant-bound model pins, and private workspaces for new signups. Migration 009 introduces atomic input replacement. Migration 010 introduces atomic final review decisions. Existing Demo Org memberships require operator review; migration 008 intentionally does not reassign them. Before 009, inspect duplicate `(workflow_id, file_type)` rows and resolve them against source evidence; it fails rather than deleting data automatically.
 
-Migrations 011–012 add immutable analysis sources and conversation continuations. Migrations 013–017 add scoped memory indexes, historical workflow discovery, a private interaction ledger, contextual row search and per-file result diversity. Migration 018 makes filename components searchable while preserving exact filenames and original row citations.
+Migrations 011–012 add immutable analysis sources and conversation continuations. Migrations 013–017 add scoped memory indexes, historical workflow discovery, a private interaction ledger, contextual row search and per-file result diversity. Migration 018 makes filename components searchable while preserving exact filenames and original row citations. Migration 019 moves identity to Clerk: `profiles.clerk_user_id`, `auth_profile_id()` and the service-role-only `provision_clerk_profile` RPC replace the `auth.users` sign-up trigger.
 
 Apply migrations before deploying the routes that call the new RPCs. Test against staging first and keep a database backup. Deployment options:
 
@@ -420,8 +423,8 @@ reverse proxy inside the customer network exposed via the `custom` provider's
   `json_schema`, Gemini `responseSchema`, Ollama/custom `json` + schema-in-prompt),
   then validates with Zod and retries once with the error appended. Transport is
   HTTP-first (`fetch`); only Anthropic keeps its SDK (D-P10).
-- **D5 — Two Supabase clients only.** `lib/supabase/server.ts` (cookie-scoped
-  `@supabase/ssr`, RLS-protected, for Server Components + auth) and
+- **D5 — Two Supabase clients only.** `lib/supabase/server.ts` (carries the
+  caller's Clerk session token, RLS-protected, for Server Components) and
   `lib/supabase/admin.ts` (service-role, used **only** inside API route handlers and
   the orchestrator, always after an org-ownership check). No client-side writes or Storage
   access — everything mutating goes through the API routes.
@@ -430,7 +433,7 @@ reverse proxy inside the customer network exposed via the `custom` provider's
 
 ```
 app/
-  (auth)/login                  sign-in / sign-up
+  (auth)/login, (auth)/sign-up  Clerk sign-in / sign-up
   (app)/dashboard               workflow list + launch cards
   (app)/workflows/new           upload wizard
   (app)/workflows/[id]          live agent view + review gate  (client, polls status)
@@ -461,7 +464,8 @@ lib/approvals/                  risk taxonomy, permission engine, service, actio
 lib/harness/                    event stream (events.ts), investigator agent + tools +
                                 QuickJS sandbox (agent/), verifiers, Mastra harness (proof only)
 lib/data/ · lib/memory/         source parsing + storage · durable memory index + search
-lib/supabase/                   server + admin + middleware clients
+lib/auth.ts                     Clerk user → FinFlow profile (getCurrentProfile)
+lib/supabase/                   server + admin + browser (Realtime) clients
 lib/{types,format,audit,csv,excel}
 ```
 
